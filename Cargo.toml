@@ -1,8 +1,9 @@
 [package]
-name = "harness"
+name = "uritheking"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 ureq = { version = "2.12", features = ["json"] }
 serde_json = "1"
+inquire = "0.7"

@@ -8,21 +8,27 @@ pub struct CliProvider {
 }
 
 impl CliProvider {
-    pub fn claude(model: Option<String>) -> Self {
+    pub fn claude(model: Option<String>, effort: Option<String>) -> Self {
         let mut args = vec!["-p".to_string()];
         if let Some(m) = model {
             args.extend(["--model".into(), m]);
         }
+        if let Some(e) = effort {
+            args.extend(["--effort".into(), e]);
+        }
         Self { program: "claude", args }
     }
 
-    pub fn codex(model: Option<String>) -> Self {
+    pub fn codex(model: Option<String>, effort: Option<String>) -> Self {
         // Read-only sandbox: we only want text back, not file edits.
         let mut args: Vec<String> = ["exec", "-s", "read-only", "--skip-git-repo-check", "--ephemeral"]
             .map(String::from)
             .into();
         if let Some(m) = model {
             args.extend(["-m".into(), m]);
+        }
+        if let Some(e) = effort {
+            args.extend(["-c".into(), format!("model_reasoning_effort=\"{e}\"")]);
         }
         Self { program: "codex", args }
     }

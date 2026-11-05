@@ -26,3 +26,11 @@ pub struct Message {
 pub trait Provider {
     fn complete(&self, history: &[Message]) -> Result<String>;
 }
+
+/// Which backend, model and reasoning effort to use. `None` means "backend default".
+#[derive(Clone, Default)]
+pub struct Selection {
+    pub backend: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
