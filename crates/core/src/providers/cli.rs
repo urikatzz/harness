@@ -1,5 +1,4 @@
 use crate::provider::{Message, Provider, Result, Role};
-use std::process::Command;
 
 /// Delegates to an installed agent CLI (`claude`, `codex`), which uses its own login.
 pub struct CliProvider {
@@ -54,10 +53,9 @@ fn flatten(history: &[Message]) -> String {
 
 impl Provider for CliProvider {
     fn complete(&self, history: &[Message]) -> Result<String> {
-        let output = Command::new(self.program)
-            .args(&self.args)
-            .arg(flatten(history))
-            .output()
+        let mut command = crate::process::provider_command(self.program, &self.args, &crate::toolbox::home())?;
+        if self.program == "codex" { command.arg("-"); }
+        let output = crate::process::run(command, flatten(history).into_bytes(), std::time::Duration::from_secs(120))
             .map_err(|e| format!("could not run `{}`: {e}", self.program))?;
 
         if !output.status.success() {

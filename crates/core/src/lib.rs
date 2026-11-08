@@ -13,3 +13,8 @@ pub use provider::{Message, Provider, Result, Role, Selection};
 pub use providers::build_provider;
 pub use toolbox::Toolbox;
 pub use permissions::Policy;
+
+mod paths;
+mod process;
+#[cfg(test)]
+mod test_support;

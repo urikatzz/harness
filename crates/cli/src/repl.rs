@@ -205,8 +205,6 @@ impl Repl {
     }
 
     fn chat(&mut self, text: &str) {
-        // Compaction may rewrite history mid-turn, so keep a copy to restore on failure.
-        let backup: Vec<Message> = self.history.iter().map(|m| Message { role: m.role, content: m.content.clone() }).collect();
         self.history.push(Message { role: Role::User, content: text.to_string() });
         let result = agent::run_turn(self.provider.as_ref(), &self.toolbox, &self.policy, &mut self.history, |ev| match ev {
             Event::ToolCall { name, args } => println!("{DIM}⚙ {name} {args}{RESET}"),
@@ -226,7 +224,11 @@ impl Repl {
             }
             Err(e) => {
                 println!("{RED}error: {e}{RESET}\n");
-                self.history = backup; // drop the failed turn so the user can retry
+                self.history.push(Message {
+                    role: Role::Assistant,
+                    content: format!("Turn interrupted: {e}. Earlier tool calls may already have completed; inspect their results before retrying."),
+                });
+                self.save();
             }
         }
     }
@@ -370,4 +372,45 @@ pub fn ask_approval(name: &str, args: &serde_json::Value, why: &str) -> bool {
     let mut answer = String::new();
     std::io::stdin().lock().read_line(&mut answer).ok();
     matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct FailsAfterWrite(Cell<usize>);
+    impl Provider for FailsAfterWrite {
+        fn complete(&self, _: &[Message]) -> Result<String> {
+            let call = self.0.get();
+            self.0.set(call + 1);
+            if call == 0 {
+                Ok(r#"<tool_call>{"name":"write_file","args":{"path":"result.txt","content":"done"}}</tool_call>"#.into())
+            } else { Err("inference unavailable".into()) }
+        }
+    }
+
+    #[test]
+    fn failed_turn_retains_completed_tool_results_in_saved_session() {
+        let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let home = std::env::temp_dir().join(format!("uritheking-recovery-{}-{id}", std::process::id()));
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("permissions.json"), r#"{"mode":"yolo"}"#).unwrap();
+        let mut repl = Repl {
+            factory: |_| unreachable!(),
+            provider: Box::new(FailsAfterWrite(Cell::new(0))),
+            selection: Selection::default(),
+            history: vec![],
+            toolbox: Toolbox::load(&home),
+            policy: Policy::load(&home, None).unwrap(),
+            role: None,
+            session: Session::new(&home),
+        };
+        repl.chat("write the result");
+        assert_eq!(std::fs::read_to_string(home.join("result.txt")).unwrap(), "done");
+        let saved = repl.session.load().unwrap();
+        assert!(saved.iter().any(|m| m.content.contains("wrote 4 bytes")));
+        assert!(saved.last().unwrap().content.contains("Turn interrupted"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }

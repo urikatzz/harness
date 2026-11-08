@@ -16,7 +16,7 @@
 //! With roles defined, an unknown or missing role gets no tools.
 
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq)]
 pub enum Decision {
@@ -28,6 +28,7 @@ pub enum Decision {
 
 #[derive(Default)]
 pub struct Policy {
+    root: PathBuf,
     pub yolo: bool,
     pub role: Option<String>,
     /// None = no roles configured, so everything is allowed.
@@ -36,22 +37,52 @@ pub struct Policy {
     approve_files: Vec<String>,
 }
 
+fn validate_list(value: &Value) -> Result<(), String> {
+    if !value.as_array().is_some_and(|list| list.iter().all(Value::is_string)) {
+        return Err("permission lists must contain strings".into());
+    }
+    Ok(())
+}
+
 fn strings(v: &Value) -> Vec<String> {
     v.as_array().into_iter().flatten().filter_map(|s| s.as_str().map(str::to_owned)).collect()
 }
 
 impl Policy {
     pub fn load(root: &Path, role: Option<String>) -> Result<Self, String> {
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
         let path = root.join("permissions.json");
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return Ok(Policy { role, ..Default::default() });
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy { root, role, ..Default::default() }),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let v: Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        if !v.is_object() { return Err("permissions must be an object".into()); }
+        if let Some(mode) = v.get("mode") {
+            if !matches!(mode.as_str(), Some("ask" | "yolo")) { return Err("invalid permission mode".into()); }
+        }
+        if let Some(roles) = v.get("roles") {
+            let roles = roles.as_object().ok_or("roles must be an object")?;
+            for role in roles.values() {
+                if !role.is_object() { return Err("role must be an object".into()); }
+                for key in ["tools", "skills"] {
+                    if let Some(list) = role.get(key) { validate_list(list)?; }
+                }
+            }
+        }
+        if let Some(files) = v.get("files") {
+            if !files.is_object() { return Err("files must be an object".into()); }
+            for key in ["deny", "approve"] {
+                if let Some(list) = files.get(key) { validate_list(list)?; }
+            }
+        }
         let allowed = v["roles"].as_object().map(|roles| {
             let r = role.as_deref().and_then(|name| roles.get(name)).cloned().unwrap_or(Value::Null);
             (strings(&r["tools"]), strings(&r["skills"]))
         });
         Ok(Policy {
+            root,
             yolo: v["mode"].as_str() == Some("yolo"),
             role,
             allowed,
@@ -73,6 +104,12 @@ impl Policy {
         self.allowed.as_ref().map_or(true, |(_, skills)| listed(skills, name))
     }
 
+    pub(crate) fn protected_patterns(&self) -> impl Iterator<Item = &str> {
+        self.deny_files.iter().chain(&self.approve_files).map(String::as_str)
+    }
+
+    pub(crate) fn root(&self) -> &Path { &self.root }
+
     /// What should happen to one tool call.
     pub fn check(&self, tool: &str, args: &Value) -> Decision {
         let who = self.role.as_deref().unwrap_or("no role");
@@ -84,14 +121,16 @@ impl Policy {
             return Decision::Deny(format!("tool `{tool}` is not allowed for {who}"));
         }
         if let Some(path) = args["path"].as_str() {
-            let path = path.trim_start_matches("./");
-            if path.split('/').any(|p| p == "..") || path.starts_with('/') {
-                return Decision::Deny(format!("`{path}` is outside the project"));
-            }
-            if self.deny_files.iter().any(|g| glob(g, path)) {
+            let resolved = match crate::paths::resolve(&self.root, path) {
+                Ok(path) => path,
+                Err(reason) => return Decision::Deny(reason),
+            };
+            let relative = resolved.strip_prefix(&self.root).unwrap();
+            let path = relative.to_string_lossy();
+            if self.deny_files.iter().any(|g| glob(g, &path)) {
                 return Decision::Deny(format!("`{path}` is a protected file"));
             }
-            if self.approve_files.iter().any(|g| glob(g, path)) {
+            if self.approve_files.iter().any(|g| glob(g, &path)) {
                 return Decision::Ask(format!("`{path}` requires manual approval"));
             }
         }
@@ -123,6 +162,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn rejects_malformed_policy_and_normalizes_only_safe_paths() {
+        let dir = crate::test_support::TestDir::new();
+        for invalid in ["null", r#"{"roles":[]}"#, r#"{"roles":{"dev":{"tools":"*"}}}"#, r#"{"files":{"deny":"secret"}}"#, r#"{"mode":"typo"}"#] {
+            std::fs::write(dir.path().join("permissions.json"), invalid).unwrap();
+            assert!(Policy::load(dir.path(), None).is_err(), "{invalid}");
+        }
+        std::fs::write(dir.path().join("permissions.json"), r#"{"mode":"yolo","files":{"deny":["secret"]}}"#).unwrap();
+        let policy = Policy::load(dir.path(), None).unwrap();
+        assert!(matches!(policy.check("read_file", &json!({"path":"././../../outside"})), Decision::Deny(_)));
+        assert!(matches!(policy.check("read_file", &json!({"path":"././secret"})), Decision::Deny(_)));
+        assert_eq!(policy.check("read_file", &json!({"path":"././public"})), Decision::Allow);
+        std::fs::remove_file(dir.path().join("permissions.json")).unwrap();
+        std::fs::create_dir(dir.path().join("permissions.json")).unwrap();
+        assert!(Policy::load(dir.path(), None).is_err());
+    }
+
+    #[test]
     fn globs() {
         assert!(glob("secrets/**", "secrets/a/b.txt"));
         assert!(glob("**/*.pem", "a/b/key.pem"));
@@ -134,6 +190,7 @@ mod tests {
     #[test]
     fn roles_and_files() {
         let p = Policy {
+            root: std::env::current_dir().unwrap(),
             yolo: true,
             role: Some("sales".into()),
             allowed: Some((vec!["read_file".into()], vec![])),

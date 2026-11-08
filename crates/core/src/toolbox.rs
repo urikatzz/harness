@@ -10,9 +10,10 @@
 
 use crate::provider::Result;
 use serde_json::{Map, Value};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use crate::permissions::Policy;
+use std::time::Duration;
 
 /// Built-in tools every role can be granted: (name, description, params).
 pub const BUILTINS: &[(&str, &str, &str)] = &[
@@ -36,6 +37,7 @@ pub struct Skill {
 
 #[derive(Default)]
 pub struct Toolbox {
+    root: PathBuf,
     pub tools: Vec<Tool>,
     pub skills: Vec<Skill>,
     /// COMPANY.md: what the company and product are; sent with every call.
@@ -51,16 +53,19 @@ pub fn home() -> PathBuf {
 
 impl Toolbox {
     pub fn load(root: &Path) -> Self {
-        let mut tb = Toolbox::default();
-        tb.company = std::fs::read_to_string(root.join("COMPANY.md")).ok().filter(|t| !t.trim().is_empty());
+        let mut tb = Toolbox { root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()), ..Default::default() };
+        let root = tb.root.clone();
+        tb.company = read_project_file(&root, "COMPANY.md").ok().filter(|t| !t.trim().is_empty());
         for dir in subdirs(&root.join("tools")) {
-            match load_tool(&dir) {
+            let safe = crate::paths::resolve(&root, &dir.strip_prefix(&root).unwrap().to_string_lossy());
+            match safe.map_err(Into::into).and_then(|dir| load_tool(&dir)) {
                 Ok(t) => tb.tools.push(t),
                 Err(e) => tb.warnings.push(format!("{}: {e}", dir.display())),
             }
         }
         for dir in subdirs(&root.join("skills")) {
-            match load_skill(&dir) {
+            let safe = crate::paths::resolve(&root, &dir.strip_prefix(&root).unwrap().to_string_lossy());
+            match safe.map_err(Into::into).and_then(|dir| load_skill(&dir)) {
                 Ok(s) => tb.skills.push(s),
                 Err(e) => tb.warnings.push(format!("{}: {e}", dir.display())),
             }
@@ -74,13 +79,13 @@ impl Toolbox {
 
     /// Runs a tool by name, or a built-in (`load_skill`, `read_file`, `write_file`).
     /// Permission checks happen before this, in `agent::run_turn`.
-    pub fn call(&self, name: &str, args: &Value) -> Result<String> {
+    pub fn call(&self, name: &str, args: &Value, policy: &Policy) -> Result<String> {
         let path = || args["path"].as_str().ok_or_else(|| format!("{name} needs {{\"path\": ...}}"));
         match name {
-            "read_file" => return Ok(std::fs::read_to_string(home().join(path()?))?),
+            "read_file" => return read_project_file(&self.root, path()?),
             "write_file" => {
                 let content = args["content"].as_str().ok_or("write_file needs \"content\"")?;
-                std::fs::write(home().join(path()?), content)?;
+                crate::paths::open(&self.root, path()?, true)?.write_all(content.as_bytes())?;
                 return Ok(format!("wrote {} bytes", content.len()));
             }
             _ => {}
@@ -88,27 +93,24 @@ impl Toolbox {
         if name == "load_skill" {
             let wanted = args["name"].as_str().ok_or("load_skill needs {\"name\": ...}")?;
             let skill = self.skills.iter().find(|s| s.name == wanted).ok_or_else(|| format!("no skill `{wanted}`"))?;
-            return Ok(std::fs::read_to_string(&skill.path)?);
+            return read_project_file(&self.root, &skill.path.strip_prefix(&self.root)?.to_string_lossy());
         }
         let tool = self.tools.iter().find(|t| t.name == name).ok_or_else(|| format!("no tool `{name}`"))?;
-        tool.run(args)
+        tool.run(args, policy)
     }
 }
 
 impl Tool {
-    fn run(&self, args: &Value) -> Result<String> {
+    fn run(&self, args: &Value, policy: &Policy) -> Result<String> {
         let (program, rest) = self.command.split_first().ok_or("empty command")?;
-        let mut cmd = Command::new(program);
-        cmd.args(rest).current_dir(&self.dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut cmd = crate::process::tool_command(program, rest, &self.dir, policy)?;
         if let Some(obj) = args.as_object() {
             for (k, v) in obj {
                 let v = v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
                 cmd.env(format!("ARG_{}", k.to_uppercase()), v);
             }
         }
-        let mut child = cmd.spawn().map_err(|e| format!("could not run `{program}`: {e}"))?;
-        child.stdin.take().unwrap().write_all(args.to_string().as_bytes())?;
-        let out = child.wait_with_output()?;
+        let out = crate::process::run(cmd, args.to_string().into_bytes(), Duration::from_secs(60))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -131,7 +133,7 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn load_tool(dir: &Path) -> Result<Tool> {
-    let raw = std::fs::read_to_string(dir.join("tool.json")).map_err(|e| format!("tool.json: {e}"))?;
+    let raw = read_project_file(dir, "tool.json").map_err(|e| format!("tool.json: {e}"))?;
     let v: Value = serde_json::from_str(&raw).map_err(|e| format!("tool.json: {e}"))?;
     let command: Vec<String> = v["command"]
         .as_array()
@@ -150,7 +152,7 @@ fn load_tool(dir: &Path) -> Result<Tool> {
 
 fn load_skill(dir: &Path) -> Result<Skill> {
     let path = dir.join("SKILL.md");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("SKILL.md: {e}"))?;
+    let text = read_project_file(dir, "SKILL.md").map_err(|e| format!("SKILL.md: {e}"))?;
     let field = |key: &str| {
         frontmatter(&text)
             .lines()
@@ -165,4 +167,11 @@ fn frontmatter(text: &str) -> &str {
     text.strip_prefix("---")
         .and_then(|rest| rest.find("\n---").map(|end| &rest[..end]))
         .unwrap_or("")
+}
+
+fn read_project_file(root: &Path, path: &str) -> Result<String> {
+    let mut content = String::new();
+    crate::paths::open(root, path, false)?.take(1024 * 1024 + 1).read_to_string(&mut content)?;
+    if content.len() > 1024 * 1024 { return Err("file exceeds 1 MiB".into()); }
+    Ok(content)
 }

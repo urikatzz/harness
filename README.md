@@ -51,7 +51,7 @@ plus one arm in `build_provider` and one in `catalog::models_for`.
 - **GIVEN** chat mode (no `-p`)
 - **WHEN** the user sends several lines
 - **THEN** every request includes all earlier user and assistant turns
-- **AND** a failed turn is dropped from history so the user can retry it
+- **AND** failed turns retain completed tool calls and results, record the interruption, and save the session so retries can account for existing changes
 
 #### Scenario: CLI providers get flattened history
 
@@ -125,6 +125,11 @@ Built-in tools: `read_file`, `write_file`, `load_skill`.
 **Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
 - `"mode": "ask"` asks y/N before every tool call. `"yolo"` runs calls without asking.
 - `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
-- If roles are defined, a missing or unknown role gets no tools. If `permissions.json` is broken, all tools are turned off.
+- If roles are defined, a missing or unknown role gets no tools. Unreadable, malformed, or incorrectly typed permission files fail closed.
+- File tools normalize relative paths, reject traversal, symlinks and hard links, and open files through directory descriptors. Reads are limited to 1 MiB.
+- Custom commands run in the macOS filesystem sandbox: they may read their tool directory and system runtimes, but cannot write files or read other project/outside files. Denied and approval-required paths are unavailable to custom commands; use built-in file tools for those operations. Custom tools require `sandbox-exec`; unsupported platforms fail closed.
+- CLI backends also require the macOS sandbox and cannot read or write project contents through their native tools. Their login/configuration access remains available outside the project. HTTP backends do not require this sandbox.
+- Custom commands have a 60-second deadline; CLI inference has a 120-second deadline. Both have an 8 MiB input limit and 1 MiB per-stream output limits, and their process groups are terminated on timeout or excess output.
+- Tool calls must be a single, complete `<tool_call>` response containing exactly `name` and an object `args`. Malformed or mixed responses stop the turn before tool execution.
 
 In the chat: `/tools`, `/skills`, `/permissions`, `/reload` (re-reads everything after an edit).

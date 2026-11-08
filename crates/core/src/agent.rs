@@ -62,11 +62,17 @@ pub fn system_prompt(tb: &Toolbox, policy: &Policy) -> String {
 }
 
 /// Pulls the first `{"name", "args"}` call out of a reply, if there is one.
-fn parse_call(reply: &str) -> Option<(String, Value)> {
-    let start = reply.find(OPEN)? + OPEN.len();
-    let end = start + reply[start..].find(CLOSE)?;
-    let v: Value = serde_json::from_str(reply[start..end].trim()).ok()?;
-    Some((v["name"].as_str()?.to_string(), v.get("args").cloned().unwrap_or(Value::Null)))
+fn parse_call(reply: &str) -> Result<Option<(String, Value)>> {
+    let reply = reply.trim();
+    if !reply.contains(OPEN) && !reply.contains(CLOSE) { return Ok(None); }
+    let payload = reply.strip_prefix(OPEN).and_then(|s| s.strip_suffix(CLOSE))
+        .ok_or("tool call must be the entire response")?;
+    let value: Value = serde_json::from_str(payload)?;
+    let object = value.as_object().ok_or("tool call must be an object")?;
+    if object.len() != 2 { return Err("tool call requires only name and args".into()); }
+    let name = value["name"].as_str().filter(|s| !s.is_empty()).ok_or("tool call needs a name")?;
+    if !value["args"].is_object() { return Err("tool args must be an object".into()); }
+    Ok(Some((name.to_string(), value["args"].clone())))
 }
 
 /// Runs one user turn to completion: model → tool → model … → final answer.
@@ -88,7 +94,7 @@ pub fn run_turn(
             Err(e) => on_event(Event::CompactFailed { error: e.to_string() }),
         }
         let reply = provider.complete(history)?;
-        let Some((name, args)) = parse_call(&reply) else {
+        let Some((name, args)) = parse_call(&reply)? else {
             history.push(Message { role: Role::Assistant, content: reply.clone() });
             return Ok(reply);
         };
@@ -106,7 +112,7 @@ pub fn run_turn(
                 format!("denied: {why}. Do not retry it; tell the user or try something else.")
             }
             None => {
-                let (output, ok) = match tb.call(&name, &args) {
+                let (output, ok) = match tb.call(&name, &args, policy) {
                     Ok(out) => (out, true),
                     Err(e) => (format!("error: {e}"), false),
                 };
@@ -124,10 +130,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_ambiguous_or_malformed_calls() {
+        for invalid in [
+            r#"Explanation <tool_call>{"name":"x","args":{}}</tool_call>"#,
+            r#"<tool_call>{"name":"x","args":{}}</tool_call><tool_call>{"name":"y","args":{}}</tool_call>"#,
+            r#"<tool_call>{"name":"x","args":[]}</tool_call>"#,
+            r#"<tool_call>{"name":"x"}</tool_call>"#,
+            r#"<tool_call>invalid</tool_call>"#,
+        ] { assert!(parse_call(invalid).is_err(), "{invalid}"); }
+    }
+
+    #[test]
     fn parses_tool_call() {
-        let (n, a) = parse_call("ok <tool_call>{\"name\":\"x\",\"args\":{\"q\":1}}</tool_call>").unwrap();
+        let (n, a) = parse_call("<tool_call>{\"name\":\"x\",\"args\":{\"q\":1}}</tool_call>").unwrap().unwrap();
         assert_eq!(n, "x");
         assert_eq!(a["q"], 1);
-        assert!(parse_call("plain answer").is_none());
+        assert!(parse_call("plain answer").unwrap().is_none());
     }
 }
