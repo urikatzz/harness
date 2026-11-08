@@ -9,7 +9,10 @@ pub struct CliProvider {
 
 impl CliProvider {
     pub fn claude(model: Option<String>, effort: Option<String>) -> Self {
-        let mut args = vec!["-p".to_string()];
+        // `--tools ""` turns off Claude Code's own tools, so file access only goes through
+        // the harness tools and their permission checks; `--strict-mcp-config` drops the
+        // user's MCP servers for the same reason.
+        let mut args = vec!["-p".to_string(), "--tools=".into(), "--strict-mcp-config".into()];
         if let Some(m) = model {
             args.extend(["--model".into(), m]);
         }
@@ -36,11 +39,13 @@ impl CliProvider {
 
 /// CLIs take one prompt, so multi-turn history is flattened into a transcript.
 fn flatten(history: &[Message]) -> String {
-    if let [only] = history {
-        return only.content.clone();
+    let (system, chat): (Vec<&Message>, Vec<&Message>) = history.iter().partition(|m| m.role == Role::System);
+    let mut out: String = system.iter().map(|m| format!("{}\n\n", m.content)).collect();
+    if let [only] = chat.as_slice() {
+        return out + &only.content;
     }
-    let mut out = String::from("Continue this conversation. Reply only as the assistant.\n\n");
-    for m in history {
+    out.push_str("Continue this conversation. Reply only as the assistant.\n\n");
+    for m in chat {
         let who = if m.role == Role::User { "User" } else { "Assistant" };
         out.push_str(&format!("{who}: {}\n\n", m.content));
     }

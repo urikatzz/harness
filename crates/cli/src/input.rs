@@ -16,6 +16,10 @@ const RESET: &str = "\x1b[0m";
 pub const COMMANDS: &[(&str, &str)] = &[
     ("help", "Show what uriTheKing can do"),
     ("model", "Pick backend, model and effort"),
+    ("tools", "List company tools"),
+    ("skills", "List skills"),
+    ("permissions", "Show role, approval mode and allowed tools"),
+    ("reload", "Re-read tools/ and skills/"),
     ("clear", "Forget the conversation and start fresh"),
     ("new", "Same as /clear"),
     ("exit", "Quit uriTheKing"),

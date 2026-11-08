@@ -108,3 +108,23 @@ plus one arm in `build_provider` and one in `catalog::models_for`.
 - **THEN** an ASCII crown hops in from the right three times, squashes on landing and sparkles (~2s)
 - **AND** the animation is erased and the normal banner prints in its place
 - **AND** it is skipped when output is piped or `URITHEKING_NO_INTRO` is set
+
+## Company tools, skills and permissions
+
+Everything lives next to the binary's working dir (or in `URITHEKING_HOME`):
+
+| Path | What it is |
+|---|---|
+| `COMPANY.md` | What the company and product are. Sent with every call. |
+| `tools/<name>/tool.json` | A company tool: `name`, `description`, `params`, `command`. The command runs in the tool's folder with arguments as JSON on stdin and as `ARG_<NAME>` env vars. Whatever it prints is the result. Any language works. |
+| `skills/<name>/SKILL.md` | A playbook (frontmatter: `name`, `description`). The model loads it when it fits the task. |
+| `permissions.json` | Which tools and skills each role gets, file rules, and the approval mode. |
+
+Built-in tools: `read_file`, `write_file`, `load_skill`.
+
+**Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
+- `"mode": "ask"` asks y/N before every tool call. `"yolo"` runs calls without asking.
+- `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
+- If roles are defined, a missing or unknown role gets no tools. If `permissions.json` is broken, all tools are turned off.
+
+In the chat: `/tools`, `/skills`, `/permissions`, `/reload` (re-reads everything after an edit).

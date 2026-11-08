@@ -1,7 +1,8 @@
 //! Interactive uriTheKing session: banner, chat loop, slash commands and `!` shell.
 
 use crate::picker;
-use uritheking_core::{Message, Provider, Result, Role, Selection};
+use uritheking_core::agent::{self, Event};
+use uritheking_core::{toolbox, Message, Provider, Result, Role, Policy, Selection, Toolbox};
 use crate::input::{resolve, LineEditor, Read};
 use std::process::Command as Shell;
 
@@ -21,6 +22,10 @@ enum Input<'a> {
     Help,
     Clear,
     Exit,
+    Tools,
+    Skills,
+    Reload,
+    Permissions,
     /// `/model` alone opens the picker; `/model <backend> [model] [effort]` switches directly.
     Model(Vec<&'a str>),
     Unknown(&'a str),
@@ -40,6 +45,10 @@ impl<'a> Input<'a> {
             "clear" | "new" => Input::Clear,
             "exit" | "quit" | "q" => Input::Exit,
             "model" => Input::Model(parts.collect()),
+            "tools" => Input::Tools,
+            "skills" => Input::Skills,
+            "reload" => Input::Reload,
+            "permissions" => Input::Permissions,
             other => Input::Unknown(other),
         }
     }
@@ -50,12 +59,42 @@ pub struct Repl {
     provider: Box<dyn Provider>,
     selection: Selection,
     history: Vec<Message>,
+    toolbox: Toolbox,
+    policy: Policy,
+    role: Option<String>,
 }
 
 impl Repl {
-    pub fn new(factory: ProviderFactory, selection: Selection) -> Result<Self> {
+    pub fn new(factory: ProviderFactory, selection: Selection, role: Option<String>) -> Result<Self> {
         let provider = factory(&selection)?;
-        Ok(Self { factory, provider, selection, history: Vec::new() })
+        let mut repl = Self { factory, provider, selection, history: Vec::new(), toolbox: Toolbox::default(), policy: Policy::default(), role };
+        repl.reload();
+        Ok(repl)
+    }
+
+    /// Re-reads tools/ and skills/ and restarts the conversation with the new instructions.
+    fn reload(&mut self) {
+        self.toolbox = Toolbox::load(&toolbox::home());
+        match Policy::load(&toolbox::home(), self.role.clone()) {
+            Ok(p) => self.policy = p,
+            // Fail closed: a broken permissions file must not mean "allow everything".
+            Err(e) => {
+                println!("{RED}permissions: {e} — tools disabled until fixed{RESET}");
+                self.policy = Policy::locked(self.role.clone());
+            }
+        }
+        for w in &self.toolbox.warnings {
+            println!("{RED}skipped {w}{RESET}");
+        }
+        self.reset_history();
+    }
+
+    fn reset_history(&mut self) {
+        self.history.clear();
+        let system = agent::system_prompt(&self.toolbox, &self.policy);
+        if !system.is_empty() {
+            self.history.push(Message { role: Role::System, content: system });
+        }
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -73,8 +112,15 @@ impl Repl {
             match Input::parse(line) {
                 Input::Exit => return Ok(()),
                 Input::Help => self.print_help(),
+                Input::Tools => self.print_tools(),
+                Input::Permissions => self.print_permissions(),
+                Input::Skills => self.print_skills(),
+                Input::Reload => {
+                    self.reload();
+                    println!("{DIM}loaded {} tools, {} skills{RESET}\n", self.toolbox.tools.len(), self.toolbox.skills.len());
+                }
                 Input::Clear => {
-                    self.history.clear();
+                    self.reset_history();
                     // Wipe screen and scrollback, then start over like a fresh launch.
                     print!("\x1b[2J\x1b[3J\x1b[H");
                     self.print_banner();
@@ -88,17 +134,58 @@ impl Repl {
     }
 
     fn chat(&mut self, text: &str) {
+        let before = self.history.len();
         self.history.push(Message { role: Role::User, content: text.to_string() });
-        match self.provider.complete(&self.history) {
-            Ok(reply) => {
-                println!("{reply}\n");
-                self.history.push(Message { role: Role::Assistant, content: reply });
+        let result = agent::run_turn(self.provider.as_ref(), &self.toolbox, &self.policy, &mut self.history, |ev| match ev {
+            Event::ToolCall { name, args } => println!("{DIM}⚙ {name} {args}{RESET}"),
+            Event::ToolResult { output, ok, .. } => {
+                let first = output.lines().next().unwrap_or("");
+                let color = if ok { DIM } else { RED };
+                println!("{color}  ↳ {first}{}{RESET}", if output.lines().count() > 1 { " …" } else { "" });
             }
+            Event::Denied { reason, .. } => println!("{RED}  ✗ {reason}{RESET}"),
+        }, ask_approval);
+        match result {
+            Ok(reply) => println!("{reply}\n"),
             Err(e) => {
                 println!("{RED}error: {e}{RESET}\n");
-                self.history.pop(); // drop the failed turn so the user can retry
+                self.history.truncate(before); // drop the failed turn so the user can retry
             }
         }
+    }
+
+    fn print_tools(&self) {
+        if self.toolbox.tools.is_empty() {
+            println!("{DIM}no tools — add tools/<name>/tool.json under {}{RESET}\n", toolbox::home().display());
+            return;
+        }
+        for t in self.toolbox.tools.iter().filter(|t| self.policy.can_use_tool(&t.name)) {
+            println!("  {BOLD}{}{RESET}  {DIM}{}{RESET}", t.name, t.description);
+        }
+        println!();
+    }
+
+    fn print_permissions(&self) {
+        let p = &self.policy;
+        println!("  {BOLD}role{RESET}  {}", p.role.as_deref().unwrap_or("none (set --role or URITHEKING_ROLE)"));
+        println!("  {BOLD}mode{RESET}  {}", if p.yolo { "yolo — tools run without asking" } else { "ask — confirm each tool call" });
+        let tools: Vec<&str> = toolbox::BUILTINS.iter().map(|b| b.0).chain(self.toolbox.tools.iter().map(|t| t.name.as_str())).collect();
+        for t in tools {
+            let ok = p.can_use_tool(t);
+            println!("    {}{} {t}{RESET}", if ok { "" } else { DIM }, if ok { "✓" } else { "✗" });
+        }
+        println!("  {DIM}rules: permissions.json in {}{RESET}\n", toolbox::home().display());
+    }
+
+    fn print_skills(&self) {
+        if self.toolbox.skills.is_empty() {
+            println!("{DIM}no skills — add skills/<name>/SKILL.md under {}{RESET}\n", toolbox::home().display());
+            return;
+        }
+        for s in self.toolbox.skills.iter().filter(|s| self.policy.can_use_skill(&s.name)) {
+            println!("  {BOLD}{}{RESET}  {DIM}{}{RESET}", s.name, s.description);
+        }
+        println!();
     }
 
     fn model_command(&mut self, args: &[&str]) {
@@ -159,6 +246,10 @@ impl Repl {
   {BOLD}/help{RESET}                       show this help
   {BOLD}/model{RESET}                      pick backend → model → effort with the arrow keys
   {BOLD}/model <backend> [model] [effort]{RESET}  switch directly, e.g. /model codex gpt-6-luna high
+  {BOLD}/tools{RESET}                      list company tools (tools/<name>/tool.json)
+  {BOLD}/skills{RESET}                     list skills (skills/<name>/SKILL.md)
+  {BOLD}/permissions{RESET}                 show your role, approval mode and allowed tools
+  {BOLD}/reload{RESET}                     re-read tools/ and skills/ after editing them
   {BOLD}/clear{RESET}                      forget the conversation and start fresh
   {BOLD}!<command>{RESET}                  run a shell command, e.g. !ls
   {BOLD}/exit{RESET} or ctrl+d             quit
@@ -185,4 +276,18 @@ fn run_shell(cmd: &str) {
         Ok(_) => println!(),
         Err(e) => println!("{RED}error: {e}{RESET}\n"),
     }
+}
+
+/// Asks the user y/N before a tool call runs. Anything but y/yes is a no.
+pub fn ask_approval(name: &str, args: &serde_json::Value, why: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        eprintln!("{RED}  ✗ {name} needs approval ({why}) but there is no terminal to ask{RESET}");
+        return false;
+    }
+    eprint!("{GOLD}  ? allow {BOLD}{name}{RESET}{GOLD} {args} — {why}? [y/N] {RESET}");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer).ok();
+    matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
 }

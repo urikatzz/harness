@@ -1,0 +1,8 @@
+{
+  "name": "company_info",
+  "description": "Look up basic facts about the company (example tool — replace with your own).",
+  "params": {
+    "topic": "what to look up: name | team | stack"
+  },
+  "command": ["sh", "run.sh"]
+}

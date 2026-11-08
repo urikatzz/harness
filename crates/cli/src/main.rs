@@ -4,11 +4,11 @@ mod picker;
 mod repl;
 
 use repl::Repl;
-use uritheking_core::{build_provider, Message, Result, Role, Selection};
+use uritheking_core::{agent, build_provider, toolbox, Message, Result, Role, Policy, Selection, Toolbox};
 
 const DEFAULT_BACKEND: &str = "claude";
 
-const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [--effort level] [-p prompt]
+const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [--effort level] [--role name] [-p prompt]
 
   no arguments  opens the uriTheKing chat with the claude backend (type /help inside)
 
@@ -19,6 +19,8 @@ const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [
   codex       runs `codex exec`, uses your Codex login
 
   --effort    reasoning effort, e.g. low | medium | high (levels depend on the model)
+  --role      your team, e.g. sales | art (or URITHEKING_ROLE); decides which tools you get
+              (rules live in permissions.json)
   -p prompt   ask once and exit; otherwise opens the chat";
 
 fn run() -> Result<()> {
@@ -26,9 +28,11 @@ fn run() -> Result<()> {
     let mut positional = Vec::new();
     let mut prompt = None;
     let mut effort = None;
+    let mut role = std::env::var("URITHEKING_ROLE").ok();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-p" => prompt = Some(args.next().ok_or("-p needs a prompt")?),
+            "--role" => role = Some(args.next().ok_or("--role needs a name")?),
             "--effort" => effort = Some(args.next().ok_or("--effort needs a level")?),
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -46,13 +50,28 @@ fn run() -> Result<()> {
 
     match prompt {
         Some(p) => {
-            let reply = build_provider(&selection)?.complete(&[Message { role: Role::User, content: p }])?;
+            let tb = Toolbox::load(&toolbox::home());
+            let policy = Policy::load(&toolbox::home(), role)?;
+            let mut history = Vec::new();
+            let system = agent::system_prompt(&tb, &policy);
+            if !system.is_empty() {
+                history.push(Message { role: Role::System, content: system });
+            }
+            history.push(Message { role: Role::User, content: p });
+            let reply = agent::run_turn(build_provider(&selection)?.as_ref(), &tb, &policy, &mut history, |ev| {
+                if let agent::Event::ToolCall { name, args } = ev {
+                    eprintln!("⚙ {name} {args}");
+                }
+                if let agent::Event::Denied { reason, .. } = ev {
+                    eprintln!("✗ {reason}");
+                }
+            }, repl::ask_approval)?;
             println!("{reply}");
             Ok(())
         }
         None => {
             intro::Intro::default().play_if_interactive();
-            Repl::new(build_provider, selection)?.run()
+            Repl::new(build_provider, selection, role)?.run()
         }
     }
 }
