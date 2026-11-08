@@ -140,6 +140,27 @@ Built-in tools: `read_file`, `write_file`, `load_skill`.
 
 In the chat: `/tools`, `/skills`, `/permissions`, `/reload` (re-reads everything after an edit).
 
+**Try the mock skill and tool.** Start with an authorized role:
+
+```bash
+uritheking codex --role dev
+# Type: Run the mock demo with the message hello.
+```
+
+The `mock-demo` skill calls `mock_echo`, which prints `Mock echo: hello` without accessing
+files or the network. In ask mode, approve the tool call when prompted. Use `/reload` in an
+existing chat to discover newly added extensions.
+
+When roles are configured, launching without `--role` or `URITHEKING_ROLE` grants no tools.
+The harness warns when file tools are unavailable, and tells the model to explain the limitation
+instead of promising changes. To create extensions through chat, use a role with `write_file`
+access (such as `dev` in the example configuration); each configuration write still requires approval.
+
+The tool loop runs only explicit `<tool_call>` replies. A plain-text reply ends the turn, so
+"I'll add it" does not mean files were changed. CLI backends can confuse these text-based
+tools with their native tools; run `uritheking eval codex <model> --effort <level>` to check
+the selected model. Failed evals show the missing calls and the model's reply.
+
 **Audit log.** Every tool call adds a `decision` line to `logs/audit.jsonl` (time, role, tool, arguments with long strings cut to 200 characters, and `allowed`/`approved`/`declined`/`denied`/`invalid` with the reason) before anything runs, and a `result` line after. If the log can't be written, the call is refused.
 
 **Verify.** Set `"verify": "<tool name>"` in `permissions.json` to run that tool after the model changes files and before its answer is accepted. If it fails, its output goes back to the model to fix; after 3 failures in one turn, the turn stops with an error. The verify tool is set by whoever owns `permissions.json`, so it runs for every role. Give it `reads` so it can see the project.

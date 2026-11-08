@@ -155,6 +155,9 @@ impl Repl {
         for w in &self.toolbox.warnings {
             println!("{RED}skipped {w}{RESET}");
         }
+        if !self.policy.can_use_tool("read_file") && !self.policy.can_use_tool("write_file") {
+            println!("{GOLD}⚠ File tools unavailable for this role. Check /permissions; restart with --role <authorized-role> (e.g. dev in the example configuration).{RESET}");
+        }
         self.reset_history();
     }
 

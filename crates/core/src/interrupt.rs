@@ -37,14 +37,20 @@ pub fn cancellable<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // The SIGINT handler and PRESSED flag are process-wide, so these tests must not overlap.
+    static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn returns_work_result() {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(cancellable(|| 7).unwrap(), 7);
     }
 
     #[test]
     fn ctrl_c_cancels_waiting() {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let result = cancellable(|| {
             unsafe { libc::raise(libc::SIGINT) };
             std::thread::sleep(Duration::from_secs(5));

@@ -1,0 +1,8 @@
+{
+  "name": "mock_echo",
+  "description": "A mock tool that echoes a message with a fixed prefix. No files or network are used.",
+  "params": {
+    "message": "the text to echo; defaults to hello when omitted"
+  },
+  "command": ["sh", "run.sh"]
+}

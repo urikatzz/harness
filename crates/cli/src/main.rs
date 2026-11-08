@@ -119,6 +119,7 @@ fn run_evals(selection: &Selection, role: Option<String>) -> Result<()> {
             println!("✗ {}", outcome.name);
             for f in &outcome.failures { println!("    {f}"); }
             println!("    tools called: {}", if outcome.tools_called.is_empty() { "none".into() } else { outcome.tools_called.join(", ") });
+            println!("    reply: {}", outcome.reply.chars().take(1000).collect::<String>());
         }
     }
     println!("\n{} passed, {failed} failed", cases.len() + errors.len() - failed);

@@ -1,0 +1,9 @@
+{
+  "prompt": "Run the mock demo with the message hello.",
+  "role": "dev",
+  "expect": {
+    "tools": ["load_skill", "mock_echo"],
+    "no_tools": ["write_file"],
+    "reply_contains": ["Mock echo: hello"]
+  }
+}

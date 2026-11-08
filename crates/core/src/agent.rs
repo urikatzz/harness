@@ -45,8 +45,22 @@ pub fn system_prompt(tb: &Toolbox, policy: &Policy) -> String {
     if let Some(company) = &tb.company {
         s.push_str(&format!("\n<company>\n{}\n</company>\n\n", company.trim()));
     }
+    let skills: Vec<_> = tb.skills.iter().filter(|sk| policy.can_use_skill(&sk.name)).collect();
+    let has_tools = BUILTINS.iter().any(|b| policy.can_use_tool(b.0))
+        || tb.tools.iter().any(|t| policy.can_use_tool(&t.name));
+    if !has_tools && skills.is_empty() {
+        s.push_str("No tools or skills are available for the current role. You cannot read or change project files. \
+            Explain this limitation when asked to perform actions; do not promise to perform them. \
+            The user can inspect /permissions and restart with --role <authorized-role> \
+            or set URITHEKING_ROLE to a role configured in permissions.json.\n");
+        return s;
+    }
     s.push_str(
         "You have company tools and skills.\n\
+         Execute requested actions using tools before your final answer; do not stop at a promise or plan. \
+         Only report completed actions when successful tool results support them. \
+         If access is unavailable or a call is denied, explain the blocker. \
+         Use only the tools listed below, through this protocol; native backend tools cannot access the project.\n\
          To use a tool, reply with ONLY this and nothing else, then wait for the result:\n\
          <tool_call>{\"name\": \"<tool>\", \"args\": {...}}</tool_call>\n\
          The result comes back in a <tool_result> message. Call tools as many times as needed, \
@@ -56,6 +70,9 @@ pub fn system_prompt(tb: &Toolbox, policy: &Policy) -> String {
          and tell the user what you found.\n",
     );
     s.push_str("\nTools:\n");
+    if !skills.is_empty() {
+        s.push_str("- load_skill: Load an allowed skill's playbook. args: name\n");
+    }
     for (name, desc, params) in BUILTINS.iter().filter(|b| policy.can_use_tool(b.0)) {
         s.push_str(&format!("- {name}: {desc} args: {params}\n"));
     }
@@ -67,7 +84,16 @@ pub fn system_prompt(tb: &Toolbox, policy: &Policy) -> String {
             }
         }
     }
-    let skills: Vec<_> = tb.skills.iter().filter(|sk| policy.can_use_skill(&sk.name)).collect();
+    if policy.can_use_tool("write_file") {
+        s.push_str("\nTo create harness extensions, use write_file with project-relative paths:\n\
+            - skills/<name>/SKILL.md: YAML frontmatter with name and description, followed by the playbook.\n\
+            - tools/<name>/tool.json: JSON with name, description, params (argument descriptions), \
+            and command (an array, e.g. [\"sh\", \"run.sh\"]).\n\
+            - tools/<name>/run.sh: command implementation; arguments arrive as JSON on stdin \
+            and ARG_<UPPERCASE_NAME> environment variables; print the result to stdout.\n\
+            These writes require manual approval. Create the files, then tell the user to /reload \
+            to discover the new extensions.\n");
+    }
     if !skills.is_empty() {
         s.push_str(
             "\nSkills are playbooks for specific kinds of tasks. When one fits the request, \
@@ -244,6 +270,66 @@ pub fn run_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_role_prompt_explains_that_no_tools_are_available() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tb = Toolbox::load(&root);
+        for role in [None, Some("unknown".into())] {
+            let policy = Policy::load(&root, role).unwrap();
+            let prompt = system_prompt(&tb, &policy);
+            assert!(prompt.contains("No tools or skills are available"), "{prompt}");
+            assert!(prompt.contains("--role"), "{prompt}");
+            assert!(!prompt.contains("You have company tools"), "{prompt}");
+            assert!(!prompt.contains("- write_file:"), "{prompt}");
+            assert!(matches!(policy.check("write_file", &json!({"path":"out.txt","content":"x"})), Decision::Deny(_)));
+        }
+    }
+
+    #[test]
+    fn dev_prompt_describes_how_to_execute_and_author_extensions() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tb = Toolbox::load(&root);
+        let policy = Policy::load(&root, Some("dev".into())).unwrap();
+        let prompt = system_prompt(&tb, &policy);
+        assert!(prompt.contains("Execute requested actions using tools before your final answer"));
+        assert!(prompt.contains("tools/<name>/tool.json"));
+        assert!(prompt.contains("skills/<name>/SKILL.md"));
+        assert!(prompt.contains("manual approval"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn bundled_mock_skill_and_tool_work_through_the_tool_loop() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = crate::test_support::TestDir::new();
+        for path in ["tools/mock_echo/tool.json", "tools/mock_echo/run.sh", "skills/mock-demo/SKILL.md"] {
+            let target = dir.path().join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(root.join(path), target).unwrap();
+        }
+        std::fs::copy(root.join("permissions.json"), dir.path().join("permissions.json")).unwrap();
+        let tb = Toolbox::load(dir.path());
+        assert!(tb.warnings.is_empty(), "{:?}", tb.warnings);
+        let policy = Policy::load(dir.path(), Some("dev".into())).unwrap();
+        let provider = script(&[
+            r#"<tool_call>{"name":"load_skill","args":{"name":"mock-demo"}}</tool_call>"#,
+            r#"<tool_call>{"name":"mock_echo","args":{"message":"hello"}}</tool_call>"#,
+            "Mock echo: hello",
+        ]);
+        let mut history = vec![Message { role: Role::User, content: "Run the mock demo with hello".into() }];
+        let mut outputs = vec![];
+        let reply = run_turn(&provider, &tb, &policy, &mut history, |ev| {
+            if let Event::ToolResult { name, output, ok } = ev {
+                assert!(ok, "{output}");
+                outputs.push((name.to_string(), output.to_string()));
+            }
+        }, |_, _, _| true).unwrap();
+        assert_eq!(reply, "Mock echo: hello");
+        assert_eq!(outputs.len(), 2);
+        assert!(outputs[0].1.contains("mock_echo"));
+        assert_eq!(outputs[1], ("mock_echo".into(), "Mock echo: hello".into()));
+    }
 
     #[test]
     fn rejects_ambiguous_or_malformed_calls() {
