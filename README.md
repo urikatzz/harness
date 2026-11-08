@@ -3,7 +3,7 @@
 The smallest model harness: send a prompt, print the reply, or open an interactive chat.
 
 ```bash
-cargo install --path .        # installs `uritheking` into ~/.cargo/bin
+cargo install --path crates/cli   # installs `uritheking` into ~/.cargo/bin
 uritheking                     # opens the chat (claude backend), type /help
 uritheking local -p "hello"
 uritheking openrouter anthropic/claude-sonnet-4.5   # chat, Ctrl-D to quit
@@ -20,15 +20,22 @@ uritheking codex gpt-5 -p "hello"
 
 ## Layout
 
-- `src/provider.rs` – `Provider` trait and `Message` type. The only thing `main` depends on.
-- `src/openai.rs` – one implementation for every OpenAI-compatible server.
-- `src/cli.rs` – one implementation that shells out to an agent CLI.
-- `src/main.rs` – argument parsing, provider selection.
-- `src/repl.rs` – interactive session: banner, chat, slash commands, `!` shell.
-- `src/picker.rs` – arrow-key menus for `/model` (backend → model → effort).
-- `src/catalog.rs` – which models each backend offers and their effort levels.
+A Cargo workspace with two crates:
 
-Adding a provider = one struct implementing `Provider` + one line in `build_provider`.
+- `crates/core` (`uritheking-core`, library) – talks to models; no terminal code.
+  - `provider.rs` – `Provider` trait, `Message`, `Selection`.
+  - `providers/mod.rs` – `build_provider`: picks the backend.
+  - `providers/openai.rs` – any OpenAI-compatible server (openrouter, local).
+  - `providers/cli.rs` – shells out to an agent CLI (claude, codex).
+  - `catalog.rs` – which models each backend offers and their effort levels.
+- `crates/cli` (`uritheking`, binary) – the terminal app.
+  - `main.rs` – argument parsing.
+  - `repl.rs` – chat session: banner, slash commands, `!` shell.
+  - `picker.rs` – arrow-key menus for `/model`.
+  - `intro.rs` – startup crown animation.
+
+Adding a backend = one struct implementing `Provider` in `crates/core/src/providers/`,
+plus one arm in `build_provider` and one in `catalog::models_for`.
 
 ## Behavior
 
@@ -93,3 +100,11 @@ Adding a provider = one struct implementing `Provider` + one line in `build_prov
 - **GIVEN** an effort level is chosen (picker or `--effort`)
 - **THEN** claude gets `--effort <level>`, codex gets `-c model_reasoning_effort="<level>"`
 - **AND** openrouter gets `"reasoning": {"effort": ...}`, local gets `"reasoning_effort": ...`
+
+#### Scenario: Startup crown animation
+
+- **GIVEN** `uritheking` is opened in a real terminal (no `-p`)
+- **WHEN** it starts
+- **THEN** an ASCII crown hops in from the right three times, squashes on landing and sparkles (~2s)
+- **AND** the animation is erased and the normal banner prints in its place
+- **AND** it is skipped when output is piped or `URITHEKING_NO_INTRO` is set

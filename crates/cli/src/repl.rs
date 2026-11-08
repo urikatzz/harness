@@ -1,8 +1,8 @@
 //! Interactive uriTheKing session: banner, chat loop, slash commands and `!` shell.
 
 use crate::picker;
-use crate::provider::{Message, Provider, Result, Role, Selection};
-use std::io::{self, BufRead, Write};
+use uritheking_core::{Message, Provider, Result, Role, Selection};
+use crate::input::{resolve, LineEditor, Read};
 use std::process::Command as Shell;
 
 const BOLD: &str = "\x1b[1m";
@@ -35,7 +35,7 @@ impl<'a> Input<'a> {
             return Input::Chat(line);
         };
         let mut parts = rest.split_whitespace();
-        match parts.next().unwrap_or("") {
+        match resolve(parts.next().unwrap_or("")) {
             "help" | "?" => Input::Help,
             "clear" | "new" => Input::Clear,
             "exit" | "quit" | "q" => Input::Exit,
@@ -60,15 +60,12 @@ impl Repl {
 
     pub fn run(&mut self) -> Result<()> {
         self.print_banner();
-        let stdin = io::stdin();
+        let mut editor = LineEditor::new();
         loop {
-            print!("{GOLD}👑 ›{RESET} ");
-            io::stdout().flush()?;
-            let mut line = String::new();
-            if stdin.lock().read_line(&mut line)? == 0 {
-                println!();
-                return Ok(()); // Ctrl-D
-            }
+            let line = match editor.read_line(&format!("{GOLD}👑 ›{RESET} "), 5)? {
+                Read::Line(line) => line,
+                Read::Eof => return Ok(()),
+            };
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -78,7 +75,9 @@ impl Repl {
                 Input::Help => self.print_help(),
                 Input::Clear => {
                     self.history.clear();
-                    println!("{DIM}history cleared{RESET}\n");
+                    // Wipe screen and scrollback, then start over like a fresh launch.
+                    print!("\x1b[2J\x1b[3J\x1b[H");
+                    self.print_banner();
                 }
                 Input::Model(args) => self.model_command(&args),
                 Input::Shell(cmd) => run_shell(cmd),

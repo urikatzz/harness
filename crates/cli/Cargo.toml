@@ -1,0 +1,10 @@
+[package]
+name = "uritheking"
+description = "uriTheKing terminal chat."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+uritheking-core.workspace = true
+inquire.workspace = true
+crossterm.workspace = true

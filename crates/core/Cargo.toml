@@ -1,0 +1,9 @@
+[package]
+name = "uritheking-core"
+description = "Model backends and model catalog for uriTheKing. No terminal UI."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ureq.workspace = true
+serde_json.workspace = true

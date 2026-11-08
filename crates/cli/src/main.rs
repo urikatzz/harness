@@ -1,15 +1,10 @@
-mod catalog;
-mod cli;
-mod openai;
+mod input;
+mod intro;
 mod picker;
-mod provider;
 mod repl;
 
-use catalog::{local_base_url, OPENROUTER_URL};
-use cli::CliProvider;
-use openai::{EffortStyle, OpenAiCompatible};
-use provider::{Message, Provider, Result, Role, Selection};
 use repl::Repl;
+use uritheking_core::{build_provider, Message, Result, Role, Selection};
 
 const DEFAULT_BACKEND: &str = "claude";
 
@@ -25,28 +20,6 @@ const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [
 
   --effort    reasoning effort, e.g. low | medium | high (levels depend on the model)
   -p prompt   ask once and exit; otherwise opens the chat";
-
-fn build_provider(sel: &Selection) -> Result<Box<dyn Provider>> {
-    let (model, effort) = (sel.model.clone(), sel.effort.clone());
-    Ok(match sel.backend.as_str() {
-        "openrouter" => {
-            let key = std::env::var("OPENROUTER_API_KEY").map_err(|_| "OPENROUTER_API_KEY is not set")?;
-            let model = model.unwrap_or_else(|| "openrouter/auto".into());
-            Box::new(OpenAiCompatible::new(OPENROUTER_URL, Some(key), model, effort, EffortStyle::OpenRouter))
-        }
-        "local" => {
-            let base = local_base_url();
-            let model = match model {
-                Some(m) => m,
-                None => openai::first_chat_model(&base)?,
-            };
-            Box::new(OpenAiCompatible::new(base, None, model, effort, EffortStyle::OpenAi))
-        }
-        "claude" => Box::new(CliProvider::claude(model, effort)),
-        "codex" => Box::new(CliProvider::codex(model, effort)),
-        other => return Err(format!("unknown provider `{other}`\n\n{USAGE}").into()),
-    })
-}
 
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -77,7 +50,10 @@ fn run() -> Result<()> {
             println!("{reply}");
             Ok(())
         }
-        None => Repl::new(build_provider, selection)?.run(),
+        None => {
+            intro::Intro::default().play_if_interactive();
+            Repl::new(build_provider, selection)?.run()
+        }
     }
 }
 

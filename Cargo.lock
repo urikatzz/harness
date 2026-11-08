@@ -671,7 +671,15 @@ dependencies = [
 name = "uritheking"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "inquire",
+ "uritheking-core",
+]
+
+[[package]]
+name = "uritheking-core"
+version = "0.1.0"
+dependencies = [
  "serde_json",
  "ureq",
 ]

@@ -1,6 +1,6 @@
 //! Which models each backend offers, and which effort levels each model accepts.
 
-use crate::openai;
+use crate::providers::openai;
 use crate::provider::Result;
 use serde_json::Value;
 
