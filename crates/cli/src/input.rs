@@ -20,6 +20,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("skills", "List skills"),
     ("permissions", "Show role, approval mode and allowed tools"),
     ("reload", "Re-read tools/ and skills/"),
+    ("resume", "Reopen a saved session"),
+    ("compact", "Summarize older messages to free context"),
     ("clear", "Forget the conversation and start fresh"),
     ("new", "Same as /clear"),
     ("exit", "Quit uriTheKing"),

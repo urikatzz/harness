@@ -8,7 +8,7 @@ use uritheking_core::{agent, build_provider, toolbox, Message, Result, Role, Pol
 
 const DEFAULT_BACKEND: &str = "claude";
 
-const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [--effort level] [--role name] [-p prompt]
+const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [--effort level] [--role name] [-c] [-p prompt]
 
   no arguments  opens the uriTheKing chat with the claude backend (type /help inside)
 
@@ -21,6 +21,7 @@ const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [
   --effort    reasoning effort, e.g. low | medium | high (levels depend on the model)
   --role      your team, e.g. sales | art (or URITHEKING_ROLE); decides which tools you get
               (rules live in permissions.json)
+  -c, --continue  reopen the most recent saved session
   -p prompt   ask once and exit; otherwise opens the chat";
 
 fn run() -> Result<()> {
@@ -28,12 +29,14 @@ fn run() -> Result<()> {
     let mut positional = Vec::new();
     let mut prompt = None;
     let mut effort = None;
+    let mut resume = false;
     let mut role = std::env::var("URITHEKING_ROLE").ok();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-p" => prompt = Some(args.next().ok_or("-p needs a prompt")?),
             "--role" => role = Some(args.next().ok_or("--role needs a name")?),
             "--effort" => effort = Some(args.next().ok_or("--effort needs a level")?),
+            "-c" | "--continue" => resume = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -71,7 +74,7 @@ fn run() -> Result<()> {
         }
         None => {
             intro::Intro::default().play_if_interactive();
-            Repl::new(build_provider, selection, role)?.run()
+            Repl::new(build_provider, selection, role, resume)?.run()
         }
     }
 }

@@ -2,6 +2,8 @@
 
 use crate::picker;
 use uritheking_core::agent::{self, Event};
+use uritheking_core::context;
+use uritheking_core::session::{self, Session};
 use uritheking_core::{toolbox, Message, Provider, Result, Role, Policy, Selection, Toolbox};
 use crate::input::{resolve, LineEditor, Read};
 use std::process::Command as Shell;
@@ -26,6 +28,9 @@ enum Input<'a> {
     Skills,
     Reload,
     Permissions,
+    Compact,
+    /// `/resume` alone opens a picker; `/resume <id>` loads that session.
+    Resume(Option<&'a str>),
     /// `/model` alone opens the picker; `/model <backend> [model] [effort]` switches directly.
     Model(Vec<&'a str>),
     Unknown(&'a str),
@@ -49,6 +54,8 @@ impl<'a> Input<'a> {
             "skills" => Input::Skills,
             "reload" => Input::Reload,
             "permissions" => Input::Permissions,
+            "compact" => Input::Compact,
+            "resume" => Input::Resume(parts.next()),
             other => Input::Unknown(other),
         }
     }
@@ -62,14 +69,75 @@ pub struct Repl {
     toolbox: Toolbox,
     policy: Policy,
     role: Option<String>,
+    session: Session,
 }
 
 impl Repl {
-    pub fn new(factory: ProviderFactory, selection: Selection, role: Option<String>) -> Result<Self> {
+    /// `resume_latest` reopens the newest saved session (`--continue`).
+    pub fn new(factory: ProviderFactory, selection: Selection, role: Option<String>, resume_latest: bool) -> Result<Self> {
         let provider = factory(&selection)?;
-        let mut repl = Self { factory, provider, selection, history: Vec::new(), toolbox: Toolbox::default(), policy: Policy::default(), role };
+        let session = Session::new(&toolbox::home());
+        let mut repl = Self { factory, provider, selection, history: Vec::new(), toolbox: Toolbox::default(), policy: Policy::default(), role, session };
         repl.reload();
+        if resume_latest {
+            match session::list(&toolbox::home()).first() {
+                Some(latest) => repl.resume(&latest.id.clone()),
+                None => println!("{DIM}no saved sessions yet — starting fresh{RESET}"),
+            }
+        }
         Ok(repl)
+    }
+
+    /// Loads a saved session behind a fresh system prompt; later turns save back to it.
+    fn resume(&mut self, id: &str) {
+        let session = Session::open(&toolbox::home(), id);
+        match session.load() {
+            Ok(msgs) => {
+                self.reset_history();
+                let n = msgs.len();
+                self.history.extend(msgs);
+                self.session = session;
+                println!("{DIM}resumed session {id} ({n} messages){RESET}\n");
+            }
+            Err(e) => println!("{RED}can't resume {id}: {e}{RESET}\n"),
+        }
+    }
+
+    fn resume_command(&mut self, id: Option<&str>) {
+        if let Some(id) = id {
+            return self.resume(id);
+        }
+        let sessions = session::list(&toolbox::home());
+        if sessions.is_empty() {
+            return println!("{DIM}no saved sessions{RESET}\n");
+        }
+        let labels: Vec<String> = sessions.iter().map(|s| format!("{}  {} ({} msgs)", s.id, s.preview, s.messages)).collect();
+        match inquire::Select::new("resume which session?", labels.clone()).prompt_skippable() {
+            Ok(Some(choice)) => {
+                let i = labels.iter().position(|l| *l == choice).unwrap_or(0);
+                self.resume(&sessions[i].id.clone());
+            }
+            Ok(None) => println!(),
+            Err(e) => println!("{RED}error: {e}{RESET}\n"),
+        }
+    }
+
+    fn compact_command(&mut self) {
+        let before = context::estimate_tokens(&self.history);
+        match context::compact(self.provider.as_ref(), &mut self.history) {
+            Ok(true) => {
+                println!("{DIM}summarized: ~{before} → ~{} tokens{RESET}\n", context::estimate_tokens(&self.history));
+                self.save();
+            }
+            Ok(false) => println!("{DIM}nothing to summarize yet{RESET}\n"),
+            Err(e) => println!("{RED}summarize failed: {e}{RESET}\n"),
+        }
+    }
+
+    fn save(&self) {
+        if let Err(e) = self.session.save(&self.history) {
+            println!("{RED}couldn't save session: {e}{RESET}");
+        }
     }
 
     /// Re-reads tools/ and skills/ and restarts the conversation with the new instructions.
@@ -119,8 +187,11 @@ impl Repl {
                     self.reload();
                     println!("{DIM}loaded {} tools, {} skills{RESET}\n", self.toolbox.tools.len(), self.toolbox.skills.len());
                 }
+                Input::Compact => self.compact_command(),
+                Input::Resume(id) => self.resume_command(id),
                 Input::Clear => {
                     self.reset_history();
+                    self.session = Session::new(&toolbox::home());
                     // Wipe screen and scrollback, then start over like a fresh launch.
                     print!("\x1b[2J\x1b[3J\x1b[H");
                     self.print_banner();
@@ -134,7 +205,8 @@ impl Repl {
     }
 
     fn chat(&mut self, text: &str) {
-        let before = self.history.len();
+        // Compaction may rewrite history mid-turn, so keep a copy to restore on failure.
+        let backup: Vec<Message> = self.history.iter().map(|m| Message { role: m.role, content: m.content.clone() }).collect();
         self.history.push(Message { role: Role::User, content: text.to_string() });
         let result = agent::run_turn(self.provider.as_ref(), &self.toolbox, &self.policy, &mut self.history, |ev| match ev {
             Event::ToolCall { name, args } => println!("{DIM}⚙ {name} {args}{RESET}"),
@@ -144,12 +216,17 @@ impl Repl {
                 println!("{color}  ↳ {first}{}{RESET}", if output.lines().count() > 1 { " …" } else { "" });
             }
             Event::Denied { reason, .. } => println!("{RED}  ✗ {reason}{RESET}"),
+            Event::Compacted { before, after } => println!("{DIM}⇣ summarized older messages: ~{before} → ~{after} tokens{RESET}"),
+            Event::CompactFailed { error } => println!("{RED}  summarize failed: {error}{RESET}"),
         }, ask_approval);
         match result {
-            Ok(reply) => println!("{reply}\n"),
+            Ok(reply) => {
+                println!("{reply}\n");
+                self.save();
+            }
             Err(e) => {
                 println!("{RED}error: {e}{RESET}\n");
-                self.history.truncate(before); // drop the failed turn so the user can retry
+                self.history = backup; // drop the failed turn so the user can retry
             }
         }
     }
@@ -250,7 +327,10 @@ impl Repl {
   {BOLD}/skills{RESET}                     list skills (skills/<name>/SKILL.md)
   {BOLD}/permissions{RESET}                 show your role, approval mode and allowed tools
   {BOLD}/reload{RESET}                     re-read tools/ and skills/ after editing them
-  {BOLD}/clear{RESET}                      forget the conversation and start fresh
+  {BOLD}/clear{RESET}                      forget the conversation and start a new session
+  {BOLD}/resume [id]{RESET}                pick a saved session (every chat autosaves to sessions/)
+  {BOLD}/compact{RESET}                    summarize older messages to free up context
+                              (happens on its own past ~URITHEKING_CONTEXT_TOKENS, default 60000)
   {BOLD}!<command>{RESET}                  run a shell command, e.g. !ls
   {BOLD}/exit{RESET} or ctrl+d             quit
 

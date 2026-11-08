@@ -1,6 +1,7 @@
 //! The tool loop: lets any backend use company tools and skills through a plain-text protocol,
 //! so it works the same for API backends and for CLIs like `claude -p`.
 
+use crate::context;
 use crate::provider::{Message, Provider, Result, Role};
 use crate::permissions::{Decision, Policy};
 use crate::toolbox::{Toolbox, BUILTINS};
@@ -16,6 +17,10 @@ pub enum Event<'a> {
     ToolCall { name: &'a str, args: &'a Value },
     ToolResult { name: &'a str, output: &'a str, ok: bool },
     Denied { name: &'a str, reason: &'a str },
+    /// Older history was summarized to fit the context budget (tokens before, after).
+    Compacted { before: usize, after: usize },
+    /// Summarizing failed; the turn continues with the full history.
+    CompactFailed { error: String },
 }
 
 /// Instructions describing the available tools and skills (empty if there are none).
@@ -76,6 +81,12 @@ pub fn run_turn(
     mut approve: impl FnMut(&str, &Value, &str) -> bool,
 ) -> Result<String> {
     for _ in 0..MAX_STEPS {
+        let before = context::estimate_tokens(history);
+        match context::compact_if_needed(provider, history) {
+            Ok(true) => on_event(Event::Compacted { before, after: context::estimate_tokens(history) }),
+            Ok(false) => {}
+            Err(e) => on_event(Event::CompactFailed { error: e.to_string() }),
+        }
         let reply = provider.complete(history)?;
         let Some((name, args)) = parse_call(&reply) else {
             history.push(Message { role: Role::Assistant, content: reply.clone() });

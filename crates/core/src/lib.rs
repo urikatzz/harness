@@ -2,9 +2,11 @@
 
 pub mod agent;
 pub mod catalog;
+pub mod context;
 pub mod permissions;
 pub mod provider;
 pub mod providers;
+pub mod session;
 pub mod toolbox;
 
 pub use provider::{Message, Provider, Result, Role, Selection};
