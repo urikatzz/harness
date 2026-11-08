@@ -1,5 +1,16 @@
-use crate::provider::{Message, Provider, Result};
+use crate::interrupt;
+use crate::provider::{Message, Provider, Reply, Result};
 use serde_json::{json, Value};
+use std::time::Duration;
+
+/// HTTP client with timeouts so a dead or overloaded server can't hang the CLI forever.
+/// The read timeout is generous: a local server may need minutes to load a model.
+fn http(read_timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(read_timeout)
+        .build()
+}
 
 /// How a server wants reasoning effort in the request body.
 #[derive(Clone, Copy)]
@@ -46,8 +57,16 @@ impl OpenAiCompatible {
 /// Raw entries a server advertises at `/models` (one network call).
 pub fn list_models(base_url: &str) -> Result<Vec<Value>> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let body: Value = ureq::get(&url).call()?.into_json()?;
+    let body: Value = http(Duration::from_secs(10)).get(&url).call()?.into_json()?;
     Ok(body["data"].as_array().cloned().unwrap_or_default())
+}
+
+/// LM Studio's load state for `model` ("loaded" / "not-loaded"), from its native
+/// `/api/v0/models` endpoint. `None` when the server doesn't offer it (Ollama, vLLM, ...).
+pub fn lmstudio_model_state(base_url: &str, model: &str) -> Option<String> {
+    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let body: Value = http(Duration::from_secs(3)).get(&format!("{root}/api/v0/models")).call().ok()?.into_json().ok()?;
+    body["data"].as_array()?.iter().find(|m| m["id"] == model)?["state"].as_str().map(str::to_owned)
 }
 
 /// Ids of the chat (non-embedding) models a server advertises.
@@ -70,29 +89,78 @@ pub fn first_chat_model(base_url: &str) -> Result<String> {
 
 impl Provider for OpenAiCompatible {
     fn complete(&self, history: &[Message]) -> Result<String> {
+        Ok(self.complete_with_reasoning(history)?.text)
+    }
+
+    fn complete_with_reasoning(&self, history: &[Message]) -> Result<Reply> {
         let messages: Vec<Value> = history
             .iter()
             .map(|m| json!({ "role": m.role.as_str(), "content": m.content }))
             .collect();
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
-        let mut req = ureq::post(&url);
+        let mut req = http(Duration::from_secs(600)).post(&url);
         if let Some(key) = &self.api_key {
             req = req.set("Authorization", &format!("Bearer {key}"));
         }
+        let payload = self.request_body(messages);
 
-        let body: Value = match req.send_json(self.request_body(messages)) {
-            Ok(resp) => resp.into_json()?,
+        // Runs off-thread so Ctrl-C can abandon a request that's taking too long.
+        let sent = interrupt::cancellable(move || match req.send_json(payload) {
+            Ok(resp) => resp.into_json::<Value>().map_err(|e| e.to_string()),
             // Surface the server's error body; it usually says what's wrong (bad model, bad key).
             Err(ureq::Error::Status(code, resp)) => {
-                return Err(format!("HTTP {code}: {}", resp.into_string().unwrap_or_default()).into())
+                Err(format!("HTTP {code}: {}", resp.into_string().unwrap_or_default()))
             }
-            Err(e) => return Err(e.into()),
-        };
+            Err(e) => Err(e.to_string()),
+        })?;
+        let body = sent?;
 
-        body["choices"][0]["message"]["content"]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("unexpected response: {body}").into())
+        let message = &body["choices"][0]["message"];
+        let content = message["content"].as_str().ok_or_else(|| format!("unexpected response: {body}"))?;
+        // LM Studio / Ollama use `reasoning_content`, OpenRouter uses `reasoning`.
+        let field = message["reasoning_content"].as_str().or(message["reasoning"].as_str());
+        Ok(split_reasoning(content, field))
+    }
+}
+
+/// Separates reasoning from the answer. Some servers put it in its own field; others
+/// leave it inline as `<think>…</think>` at the start of the content.
+fn split_reasoning(content: &str, field: Option<&str>) -> Reply {
+    let mut reasoning = field.map(str::trim).filter(|r| !r.is_empty()).map(str::to_owned);
+    let mut text = content;
+    let trimmed = content.trim_start();
+    if let Some(after_open) = trimmed.strip_prefix("<think>") {
+        if let Some((inner, rest)) = after_open.split_once("</think>") {
+            let inner = inner.trim();
+            if reasoning.is_none() && !inner.is_empty() {
+                reasoning = Some(inner.to_owned());
+            }
+            text = rest;
+        }
+    }
+    Reply { text: text.trim_start().to_owned(), reasoning }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_reasoning;
+
+    #[test]
+    fn reasoning_from_field() {
+        let r = split_reasoning("answer", Some("because"));
+        assert_eq!((r.text.as_str(), r.reasoning.as_deref()), ("answer", Some("because")));
+    }
+
+    #[test]
+    fn reasoning_from_think_tags() {
+        let r = split_reasoning("<think>\nhmm\n</think>\n\nanswer", None);
+        assert_eq!((r.text.as_str(), r.reasoning.as_deref()), ("answer", Some("hmm")));
+    }
+
+    #[test]
+    fn no_reasoning() {
+        let r = split_reasoning("plain", Some("  "));
+        assert_eq!((r.text.as_str(), r.reasoning), ("plain", None));
     }
 }

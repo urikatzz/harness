@@ -9,14 +9,27 @@
 //!   "files": {
 //!     "deny":    ["secrets/**", "**/*.pem"],   // never touched, not even with approval
 //!     "approve": [".env", "config/**"]         // always need a manual yes, even in yolo
-//!   }
+//!   },
+//!   "verify": "run_checks",               // tool run after file changes, before the answer
+//!   "trust_tool_output": false            // true: yolo stays yolo after reading tool output
 //! }
+//!
+//! Built in, whatever the file says: `write_file` may never touch `sessions/` or `logs/`, and
+//! writes to `permissions.json`, `COMPANY.md`, `tools/` and `skills/` always need a manual yes.
 //!
 //! The role comes from `--role` / `URITHEKING_ROLE`. No file = everything allowed, mode "ask".
 //! With roles defined, an unknown or missing role gets no tools.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+
+/// The reason given for a call that only needs a yes because the mode is "ask".
+pub const ASK_MODE: &str = "ask mode";
+
+/// Harness files a model-driven write must never change.
+const STATE_DIRS: &[&str] = &["sessions/**", "logs/**"];
+/// Harness configuration: changing it changes what the model may do, so a human must agree.
+const CONFIG_FILES: &[&str] = &["permissions.json", "COMPANY.md", "tools/**", "skills/**"];
 
 #[derive(Debug, PartialEq)]
 pub enum Decision {
@@ -26,7 +39,7 @@ pub enum Decision {
     Deny(String),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Policy {
     root: PathBuf,
     pub yolo: bool,
@@ -37,6 +50,10 @@ pub struct Policy {
     allowed: Option<(Vec<String>, Vec<String>)>,
     deny_files: Vec<String>,
     approve_files: Vec<String>,
+    /// Tool to run after file changes, before a final answer is accepted.
+    pub verify: Option<String>,
+    /// Skip the extra approval for side-effecting calls after tool output entered the chat.
+    pub trust_tool_output: bool,
 }
 
 fn validate_list(value: &Value) -> Result<(), String> {
@@ -64,8 +81,13 @@ impl Policy {
         if let Some(mode) = v.get("mode") {
             if !matches!(mode.as_str(), Some("ask" | "yolo")) { return Err("invalid permission mode".into()); }
         }
-        if let Some(sandbox) = v.get("sandbox") {
-            if !sandbox.is_boolean() { return Err("sandbox must be true or false".into()); }
+        for key in ["sandbox", "trust_tool_output"] {
+            if let Some(flag) = v.get(key) {
+                if !flag.is_boolean() { return Err(format!("{key} must be true or false")); }
+            }
+        }
+        if let Some(verify) = v.get("verify") {
+            if !verify.as_str().is_some_and(|s| !s.is_empty()) { return Err("verify must be a tool name".into()); }
         }
         if let Some(roles) = v.get("roles") {
             let roles = roles.as_object().ok_or("roles must be an object")?;
@@ -94,7 +116,14 @@ impl Policy {
             allowed,
             deny_files: strings(&v["files"]["deny"]),
             approve_files: strings(&v["files"]["approve"]),
+            verify: v["verify"].as_str().map(str::to_owned),
+            trust_tool_output: v["trust_tool_output"] == Value::Bool(true),
         })
+    }
+
+    /// The same rules in ask mode, so every call goes through the approval callback.
+    pub fn for_eval(&self) -> Self {
+        Policy { yolo: false, ..self.clone() }
     }
 
     /// No tools or skills at all; used when the rules file can't be read.
@@ -136,11 +165,17 @@ impl Policy {
             if self.deny_files.iter().any(|g| glob(g, &path)) {
                 return Decision::Deny(format!("`{path}` is a protected file"));
             }
+            if tool == "write_file" && STATE_DIRS.iter().any(|g| glob(g, &path)) {
+                return Decision::Deny(format!("`{path}` is harness state and cannot be written"));
+            }
+            if tool == "write_file" && CONFIG_FILES.iter().any(|g| glob(g, &path)) {
+                return Decision::Ask(format!("`{path}` is harness configuration and requires manual approval"));
+            }
             if self.approve_files.iter().any(|g| glob(g, &path)) {
                 return Decision::Ask(format!("`{path}` requires manual approval"));
             }
         }
-        if self.yolo { Decision::Allow } else { Decision::Ask(String::from("ask mode")) }
+        if self.yolo { Decision::Allow } else { Decision::Ask(ASK_MODE.into()) }
     }
 }
 
@@ -203,11 +238,37 @@ mod tests {
             allowed: Some((vec!["read_file".into()], vec![])),
             deny_files: vec!["secrets/**".into()],
             approve_files: vec![".env".into()],
+            ..Default::default()
         };
         assert_eq!(p.check("read_file", &json!({"path": "README.md"})), Decision::Allow);
         assert!(matches!(p.check("read_file", &json!({"path": ".env"})), Decision::Ask(_)));
         assert!(matches!(p.check("read_file", &json!({"path": "secrets/k"})), Decision::Deny(_)));
         assert!(matches!(p.check("read_file", &json!({"path": "../x"})), Decision::Deny(_)));
         assert!(matches!(p.check("company_info", &json!({})), Decision::Deny(_)));
+    }
+
+    #[test]
+    fn harness_files_are_guarded_even_in_yolo() {
+        let p = Policy { root: std::env::current_dir().unwrap(), yolo: true, ..Default::default() };
+        for path in ["sessions/1.json", "logs/audit.jsonl"] {
+            assert!(matches!(p.check("write_file", &json!({"path": path})), Decision::Deny(_)), "{path}");
+            assert_eq!(p.check("read_file", &json!({"path": path})), Decision::Allow);
+        }
+        for path in ["permissions.json", "COMPANY.md", "tools/x/tool.json", "skills/x/SKILL.md"] {
+            assert!(matches!(p.check("write_file", &json!({"path": path})), Decision::Ask(_)), "{path}");
+        }
+    }
+
+    #[test]
+    fn reads_verify_and_trust_settings() {
+        let dir = crate::test_support::TestDir::new();
+        std::fs::write(dir.path().join("permissions.json"), r#"{"verify":"checks","trust_tool_output":true}"#).unwrap();
+        let p = Policy::load(dir.path(), None).unwrap();
+        assert_eq!(p.verify.as_deref(), Some("checks"));
+        assert!(p.trust_tool_output);
+        for bad in [r#"{"verify":""}"#, r#"{"verify":3}"#, r#"{"trust_tool_output":"yes"}"#] {
+            std::fs::write(dir.path().join("permissions.json"), bad).unwrap();
+            assert!(Policy::load(dir.path(), None).is_err(), "{bad}");
+        }
     }
 }

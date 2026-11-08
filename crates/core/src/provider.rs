@@ -27,6 +27,17 @@ pub struct Message {
 /// Anything that can turn a conversation into the next assistant reply.
 pub trait Provider {
     fn complete(&self, history: &[Message]) -> Result<String>;
+
+    /// Like `complete`, plus the model's reasoning when the backend exposes it.
+    fn complete_with_reasoning(&self, history: &[Message]) -> Result<Reply> {
+        Ok(Reply { text: self.complete(history)?, reasoning: None })
+    }
+}
+
+/// One assistant reply and, for thinking models, the reasoning behind it.
+pub struct Reply {
+    pub text: String,
+    pub reasoning: Option<String>,
 }
 
 /// Which backend, model and reasoning effort to use. `None` means "backend default".

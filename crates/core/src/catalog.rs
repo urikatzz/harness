@@ -75,3 +75,20 @@ fn openrouter_models() -> Result<Vec<ModelOption>> {
         })
         .collect())
 }
+
+/// A heads-up when a `local` model isn't loaded yet: LM Studio would load it on the
+/// first message, which can take minutes and a lot of RAM. `None` when it's fine or unknown.
+pub fn local_load_warning(model: Option<&str>) -> Option<String> {
+    let base = local_base_url();
+    let model = match model {
+        Some(m) => m.to_string(),
+        None => openai::first_chat_model(&base).ok()?,
+    };
+    match openai::lmstudio_model_state(&base, &model)?.as_str() {
+        "loaded" => None,
+        _ => Some(format!(
+            "{model} is not loaded — the first message will load it, which can take minutes and lots of RAM.\n\
+             Load it first with: lms load {model} --context-length 32768   (ctrl+c cancels a stuck request)"
+        )),
+    }
+}

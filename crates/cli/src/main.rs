@@ -2,6 +2,7 @@ mod input;
 mod intro;
 mod picker;
 mod repl;
+mod spinner;
 
 use repl::Repl;
 use uritheking_core::{agent, build_provider, toolbox, Message, Result, Role, Policy, Selection, Toolbox};
@@ -9,6 +10,7 @@ use uritheking_core::{agent, build_provider, toolbox, Message, Result, Role, Pol
 const DEFAULT_BACKEND: &str = "claude";
 
 const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [--effort level] [--role name] [-c] [-p prompt]
+       uritheking eval [backend] [model] [--effort level] [--role name]
 
   no arguments  opens the uriTheKing chat with the claude backend (type /help inside)
 
@@ -22,7 +24,10 @@ const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [
   --role      your team, e.g. sales | art (or URITHEKING_ROLE); decides which tools you get
               (rules live in permissions.json)
   -c, --continue  reopen the most recent saved session
-  -p prompt   ask once and exit; otherwise opens the chat";
+  -p prompt   ask once and exit; otherwise opens the chat
+
+  eval        runs every evals/<name>.json case and reports pass/fail (exit 1 if any fail).
+              Calls that could write files or use the network are declined, never run.";
 
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -44,6 +49,8 @@ fn run() -> Result<()> {
             _ => positional.push(a),
         }
     }
+    let eval = positional.first().is_some_and(|p| p == "eval");
+    if eval { positional.remove(0); }
     let mut positional = positional.into_iter();
     let selection = Selection {
         backend: positional.next().unwrap_or_else(|| DEFAULT_BACKEND.into()),
@@ -51,6 +58,9 @@ fn run() -> Result<()> {
         effort,
     };
 
+    if eval {
+        return run_evals(&selection, role);
+    }
     match prompt {
         Some(p) => {
             let tb = Toolbox::load(&toolbox::home());
@@ -71,6 +81,12 @@ fn run() -> Result<()> {
                 if let agent::Event::BadCall { error } = ev {
                     eprintln!("↻ malformed tool call ({error}); asking the model to resend");
                 }
+                if let agent::Event::Verify { ok, output } = ev {
+                    eprintln!("{} {}", if ok { "✓ verified" } else { "✗ verify failed:" }, if ok { "" } else { output.lines().next().unwrap_or("") });
+                }
+                if let agent::Event::AuditFailed { error } = ev {
+                    eprintln!("audit log: {error}");
+                }
             }, repl::ask_approval)?;
             println!("{reply}");
             Ok(())
@@ -80,6 +96,34 @@ fn run() -> Result<()> {
             Repl::new(build_provider, selection, role, resume)?.run()
         }
     }
+}
+
+fn run_evals(selection: &Selection, role: Option<String>) -> Result<()> {
+    use uritheking_core::eval;
+    let home = toolbox::home();
+    let tb = Toolbox::load(&home);
+    let (cases, errors) = eval::load(&home);
+    for e in &errors { eprintln!("✗ {e}"); }
+    if cases.is_empty() {
+        return Err(format!("no eval cases in {}", home.join("evals").display()).into());
+    }
+    let provider = build_provider(selection)?;
+    let mut failed = errors.len();
+    for case in &cases {
+        let policy = Policy::load(&home, case.role.clone().or_else(|| role.clone()))?;
+        let outcome = eval::run(provider.as_ref(), &tb, &policy, case);
+        if outcome.passed() {
+            println!("✓ {}", outcome.name);
+        } else {
+            failed += 1;
+            println!("✗ {}", outcome.name);
+            for f in &outcome.failures { println!("    {f}"); }
+            println!("    tools called: {}", if outcome.tools_called.is_empty() { "none".into() } else { outcome.tools_called.join(", ") });
+        }
+    }
+    println!("\n{} passed, {failed} failed", cases.len() + errors.len() - failed);
+    if failed > 0 { std::process::exit(1); }
+    Ok(())
 }
 
 fn main() {

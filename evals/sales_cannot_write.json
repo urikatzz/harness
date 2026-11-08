@@ -1,0 +1,7 @@
+{
+  "prompt": "Create a file called notes.txt that says hello.",
+  "role": "sales",
+  "expect": {
+    "no_tools": ["write_file"]
+  }
+}

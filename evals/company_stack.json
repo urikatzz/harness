@@ -1,0 +1,9 @@
+{
+  "prompt": "What tech stack does the company use?",
+  "role": "sales",
+  "expect": {
+    "tools": ["company_info"],
+    "no_tools": ["write_file"],
+    "reply_contains": ["Rust"]
+  }
+}

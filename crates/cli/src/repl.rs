@@ -1,8 +1,9 @@
 //! Interactive uriTheKing session: banner, chat loop, slash commands and `!` shell.
 
 use crate::picker;
+use crate::spinner::Spinner;
 use uritheking_core::agent::{self, Event};
-use uritheking_core::context;
+use uritheking_core::{catalog, context};
 use uritheking_core::session::{self, Session};
 use uritheking_core::{toolbox, Message, Provider, Result, Role, Policy, Selection, Toolbox};
 use crate::input::{resolve, LineEditor, Read};
@@ -206,18 +207,31 @@ impl Repl {
 
     fn chat(&mut self, text: &str) {
         self.history.push(Message { role: Role::User, content: text.to_string() });
-        let result = agent::run_turn(self.provider.as_ref(), &self.toolbox, &self.policy, &mut self.history, |ev| match ev {
-            Event::ToolCall { name, args } => println!("{DIM}⚙ {name} {args}{RESET}"),
-            Event::ToolResult { output, ok, .. } => {
-                let first = output.lines().next().unwrap_or("");
-                let color = if ok { DIM } else { RED };
-                println!("{color}  ↳ {first}{}{RESET}", if output.lines().count() > 1 { " …" } else { "" });
+        let mut spinner: Option<Spinner> = None;
+        let result = agent::run_turn(self.provider.as_ref(), &self.toolbox, &self.policy, &mut self.history, |ev| {
+            // Any event means the model answered: clear the spinner before printing.
+            spinner = None;
+            match ev {
+                Event::Thinking => spinner = Some(Spinner::start("thinking")),
+                Event::Reasoning { text } => print_reasoning(text),
+                Event::ToolCall { name, args } => println!("{DIM}⚙ {name} {args}{RESET}"),
+                Event::ToolResult { output, ok, .. } => {
+                    let first = output.lines().next().unwrap_or("");
+                    let color = if ok { DIM } else { RED };
+                    println!("{color}  ↳ {first}{}{RESET}", if output.lines().count() > 1 { " …" } else { "" });
+                }
+                Event::Denied { reason, .. } => println!("{RED}  ✗ {reason}{RESET}"),
+                Event::BadCall { error } => println!("{DIM}  ↻ malformed tool call ({error}); asking the model to resend{RESET}"),
+                Event::Compacted { before, after } => println!("{DIM}⇣ summarized older messages: ~{before} → ~{after} tokens{RESET}"),
+                Event::CompactFailed { error } => println!("{RED}  summarize failed: {error}{RESET}"),
+                Event::Verify { ok, output } => {
+                    let first = output.lines().next().unwrap_or("");
+                    if ok { println!("{DIM}✓ verified{RESET}") } else { println!("{RED}✗ verify failed: {first}{RESET}") }
+                }
+                Event::AuditFailed { error } => println!("{RED}  audit log: {error}{RESET}"),
             }
-            Event::Denied { reason, .. } => println!("{RED}  ✗ {reason}{RESET}"),
-            Event::BadCall { error } => println!("{DIM}  ↻ malformed tool call ({error}); asking the model to resend{RESET}"),
-            Event::Compacted { before, after } => println!("{DIM}⇣ summarized older messages: ~{before} → ~{after} tokens{RESET}"),
-            Event::CompactFailed { error } => println!("{RED}  summarize failed: {error}{RESET}"),
         }, ask_approval);
+        drop(spinner);
         match result {
             Ok(reply) => {
                 println!("{reply}\n");
@@ -290,7 +304,9 @@ impl Repl {
             Ok(p) => {
                 self.provider = p;
                 self.selection = selection;
-                println!("{DIM}switched to{RESET} {}\n", self.label());
+                println!("{DIM}switched to{RESET} {}", self.label());
+                self.warn_if_unloaded();
+                println!();
             }
             Err(e) => println!("{RED}error: {e}{RESET}\n"),
         }
@@ -313,7 +329,17 @@ impl Repl {
             "      {DIM}/ commands ·{RESET} ! {DIM}bash ·{RESET} ctrl+d {DIM}exit{RESET}"
         );
         println!("      {}", self.label());
-        println!("  {DIM}Type /help to see what uriTheKing can do.{RESET}\n");
+        println!("  {DIM}Type /help to see what uriTheKing can do.{RESET}");
+        self.warn_if_unloaded();
+        println!();
+    }
+
+    fn warn_if_unloaded(&self) {
+        if self.selection.backend == "local" {
+            if let Some(w) = catalog::local_load_warning(self.selection.model.as_deref()) {
+                println!("{GOLD}⚠ {w}{RESET}");
+            }
+        }
     }
 
     fn print_help(&self) {
@@ -348,6 +374,20 @@ impl Repl {
 }
 
 /// Runs `cmd` through the user's shell, streaming its output straight to the terminal.
+/// Most of a model's reasoning shown dimmed above its answer; very long ones are cut.
+fn print_reasoning(text: &str) {
+    const MAX_LINES: usize = 30;
+    let lines: Vec<&str> = text.lines().collect();
+    println!("{DIM}✻ reasoning{RESET}");
+    for line in lines.iter().take(MAX_LINES) {
+        println!("{DIM}│ {line}{RESET}");
+    }
+    if lines.len() > MAX_LINES {
+        println!("{DIM}│ … {} more lines{RESET}", lines.len() - MAX_LINES);
+    }
+    println!();
+}
+
 fn run_shell(cmd: &str) {
     if cmd.is_empty() {
         println!("{DIM}usage: !<command>{RESET}\n");
