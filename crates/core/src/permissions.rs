@@ -30,6 +30,8 @@ pub enum Decision {
 pub struct Policy {
     root: PathBuf,
     pub yolo: bool,
+    /// `"sandbox": false`: run custom tools and CLI backends without the macOS sandbox.
+    pub unsandboxed: bool,
     pub role: Option<String>,
     /// None = no roles configured, so everything is allowed.
     allowed: Option<(Vec<String>, Vec<String>)>,
@@ -62,6 +64,9 @@ impl Policy {
         if let Some(mode) = v.get("mode") {
             if !matches!(mode.as_str(), Some("ask" | "yolo")) { return Err("invalid permission mode".into()); }
         }
+        if let Some(sandbox) = v.get("sandbox") {
+            if !sandbox.is_boolean() { return Err("sandbox must be true or false".into()); }
+        }
         if let Some(roles) = v.get("roles") {
             let roles = roles.as_object().ok_or("roles must be an object")?;
             for role in roles.values() {
@@ -84,6 +89,7 @@ impl Policy {
         Ok(Policy {
             root,
             yolo: v["mode"].as_str() == Some("yolo"),
+            unsandboxed: v["sandbox"] == Value::Bool(false),
             role,
             allowed,
             deny_files: strings(&v["files"]["deny"]),
@@ -164,7 +170,7 @@ mod tests {
     #[test]
     fn rejects_malformed_policy_and_normalizes_only_safe_paths() {
         let dir = crate::test_support::TestDir::new();
-        for invalid in ["null", r#"{"roles":[]}"#, r#"{"roles":{"dev":{"tools":"*"}}}"#, r#"{"files":{"deny":"secret"}}"#, r#"{"mode":"typo"}"#] {
+        for invalid in ["null", r#"{"roles":[]}"#, r#"{"roles":{"dev":{"tools":"*"}}}"#, r#"{"files":{"deny":"secret"}}"#, r#"{"mode":"typo"}"#, r#"{"sandbox":"off"}"#] {
             std::fs::write(dir.path().join("permissions.json"), invalid).unwrap();
             assert!(Policy::load(dir.path(), None).is_err(), "{invalid}");
         }
@@ -192,6 +198,7 @@ mod tests {
         let p = Policy {
             root: std::env::current_dir().unwrap(),
             yolo: true,
+            unsandboxed: false,
             role: Some("sales".into()),
             allowed: Some((vec!["read_file".into()], vec![])),
             deny_files: vec!["secrets/**".into()],

@@ -214,6 +214,7 @@ impl Repl {
                 println!("{color}  ↳ {first}{}{RESET}", if output.lines().count() > 1 { " …" } else { "" });
             }
             Event::Denied { reason, .. } => println!("{RED}  ✗ {reason}{RESET}"),
+            Event::BadCall { error } => println!("{DIM}  ↻ malformed tool call ({error}); asking the model to resend{RESET}"),
             Event::Compacted { before, after } => println!("{DIM}⇣ summarized older messages: ~{before} → ~{after} tokens{RESET}"),
             Event::CompactFailed { error } => println!("{RED}  summarize failed: {error}{RESET}"),
         }, ask_approval);

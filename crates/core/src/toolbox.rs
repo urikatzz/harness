@@ -1,7 +1,8 @@
 //! Company tools and skills loaded from disk.
 //!
 //! Layout (relative to the harness home, `URITHEKING_HOME` or the current dir):
-//!   tools/<name>/tool.json   — {"name","description","params":{arg: description},"command":[..]}
+//!   tools/<name>/tool.json   — {"name","description","params":{arg: description},"command":[..],
+//!                               "writes":[project folders the command may write, optional]}
 //!   COMPANY.md               — company/product context, sent with every call
 //!   skills/<name>/SKILL.md   — frontmatter `name:` / `description:`, then instructions
 //!
@@ -27,6 +28,8 @@ pub struct Tool {
     pub params: Map<String, Value>,
     command: Vec<String>,
     dir: PathBuf,
+    /// Project folders (absolute) the command may write to.
+    writes: Vec<PathBuf>,
 }
 
 pub struct Skill {
@@ -58,7 +61,7 @@ impl Toolbox {
         tb.company = read_project_file(&root, "COMPANY.md").ok().filter(|t| !t.trim().is_empty());
         for dir in subdirs(&root.join("tools")) {
             let safe = crate::paths::resolve(&root, &dir.strip_prefix(&root).unwrap().to_string_lossy());
-            match safe.map_err(Into::into).and_then(|dir| load_tool(&dir)) {
+            match safe.map_err(Into::into).and_then(|dir| load_tool(&root, &dir)) {
                 Ok(t) => tb.tools.push(t),
                 Err(e) => tb.warnings.push(format!("{}: {e}", dir.display())),
             }
@@ -103,7 +106,8 @@ impl Toolbox {
 impl Tool {
     fn run(&self, args: &Value, policy: &Policy) -> Result<String> {
         let (program, rest) = self.command.split_first().ok_or("empty command")?;
-        let mut cmd = crate::process::tool_command(program, rest, &self.dir, policy)?;
+        let scratch = crate::process::Scratch::new()?;
+        let mut cmd = crate::process::tool_command(program, rest, &self.dir, &self.writes, scratch.path(), policy)?;
         if let Some(obj) = args.as_object() {
             for (k, v) in obj {
                 let v = v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
@@ -132,7 +136,10 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn load_tool(dir: &Path) -> Result<Tool> {
+/// Top-level folders a tool may never write: the harness's own config and state.
+const RESERVED: &[&str] = &["tools", "skills", "sessions"];
+
+fn load_tool(root: &Path, dir: &Path) -> Result<Tool> {
     let raw = read_project_file(dir, "tool.json").map_err(|e| format!("tool.json: {e}"))?;
     let v: Value = serde_json::from_str(&raw).map_err(|e| format!("tool.json: {e}"))?;
     let command: Vec<String> = v["command"]
@@ -147,7 +154,24 @@ fn load_tool(dir: &Path) -> Result<Tool> {
         params: v["params"].as_object().cloned().unwrap_or_default(),
         command,
         dir: dir.to_path_buf(),
+        writes: writable_folders(root, &v["writes"])?,
     })
+}
+
+/// `writes` entries must be existing folders inside the project, below the top level.
+fn writable_folders(root: &Path, value: &Value) -> Result<Vec<PathBuf>> {
+    if value.is_null() { return Ok(Vec::new()); }
+    let list = value.as_array().ok_or("tool.json \"writes\" must be a list of folders")?;
+    list.iter().map(|entry| {
+        let rel = entry.as_str().ok_or("tool.json \"writes\" must be a list of folders")?;
+        let path = crate::paths::resolve(root, rel).map_err(|e| format!("writes `{rel}`: {e}"))?;
+        let first = path.strip_prefix(root)?.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned());
+        if first.as_deref().is_some_and(|f| RESERVED.contains(&f)) {
+            return Err(format!("writes `{rel}`: tools may not write to {}", RESERVED.join("/, ") + "/").into());
+        }
+        if !path.is_dir() { return Err(format!("writes `{rel}`: not an existing folder").into()); }
+        Ok(path)
+    }).collect()
 }
 
 fn load_skill(dir: &Path) -> Result<Skill> {

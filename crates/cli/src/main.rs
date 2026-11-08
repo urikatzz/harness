@@ -68,6 +68,9 @@ fn run() -> Result<()> {
                 if let agent::Event::Denied { reason, .. } = ev {
                     eprintln!("✗ {reason}");
                 }
+                if let agent::Event::BadCall { error } = ev {
+                    eprintln!("↻ malformed tool call ({error}); asking the model to resend");
+                }
             }, repl::ask_approval)?;
             println!("{reply}");
             Ok(())

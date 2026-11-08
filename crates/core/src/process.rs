@@ -111,40 +111,104 @@ pub fn run(mut command: Command, input: Vec<u8>, timeout: Duration) -> Result<Ou
     })
 }
 
-/// Custom tools may read their own directory and system runtimes, but cannot write files.
-/// Protected project paths stay inaccessible even inside the tool directory.
+/// A private, empty temp folder for one tool call, removed afterwards.
+pub struct Scratch(std::path::PathBuf);
+impl Scratch {
+    pub fn new() -> Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("uritheking-tool-{}-{nanos}-{n}", std::process::id()));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path.canonicalize()?))
+    }
+    pub fn path(&self) -> &std::path::Path { &self.0 }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+const UNSANDBOXED_HINT: &str = "set \"sandbox\": false in permissions.json to run without it";
+
+/// `sandbox-exec` is deprecated by Apple, so check once that it still works before relying on it.
+fn sandbox_exec() -> Result<Command> {
+    static WORKS: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
+    let works = WORKS.get_or_init(|| {
+        if !cfg!(target_os = "macos") {
+            return Err(format!("the filesystem sandbox needs macOS; {UNSANDBOXED_HINT}"));
+        }
+        let probe = Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .status();
+        match probe {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(format!("/usr/bin/sandbox-exec is not working ({status}); {UNSANDBOXED_HINT}")),
+            Err(e) => Err(format!("/usr/bin/sandbox-exec is unavailable ({e}); {UNSANDBOXED_HINT}")),
+        }
+    });
+    works.clone()?;
+    Ok(Command::new("/usr/bin/sandbox-exec"))
+}
+
+/// A quoted SBPL string. Characters that would need escaping are refused instead of escaped.
+fn sbpl_string(s: &str) -> Result<String> {
+    if s.chars().any(|c| c == '"' || c == '\\' || c.is_control()) {
+        return Err(format!("path cannot be used in the sandbox profile: {s:?}").into());
+    }
+    Ok(format!("\"{s}\""))
+}
+
+/// Custom tools may read their own directory, system runtimes, their `writes` folders and a
+/// private temp folder, and write only to the last two. Protected project paths stay off-limits.
 pub fn tool_command(
     program: &str,
     args: &[String],
     dir: &std::path::Path,
+    writes: &[std::path::PathBuf],
+    scratch: &std::path::Path,
     policy: &crate::permissions::Policy,
 ) -> Result<Command> {
-    if !cfg!(target_os = "macos") {
-        return Err("custom tools require the macOS filesystem sandbox; use built-in file tools on this platform".into());
-    }
     let dir = dir.canonicalize()?;
-    let quote = |s: &str| serde_json::to_string(s).unwrap();
-    let mut profile = format!(
-        "(version 1)(allow default)(deny file-read* file-write*)(allow file-read-metadata)(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library/Apple\") (subpath \"/private/var/db/dyld\") (literal \"/dev/null\") (literal \"/\") (subpath {}))",
-        quote(&dir.to_string_lossy())
-    );
-    for pattern in policy.protected_patterns() {
-        let absolute = format!("{}/{}", policy.root().display(), pattern);
-        profile.push_str(&format!(
-            "(deny file-read* (regex #{}))",
-            quote(&glob_regex(&absolute)).replace("\\\\", "\\")
-        ));
+    if policy.unsandboxed {
+        let mut command = Command::new(program);
+        command.args(args).current_dir(&dir).env("TMPDIR", scratch);
+        return Ok(command);
     }
-    let mut command = Command::new("/usr/bin/sandbox-exec");
-    command
-        .args(["-p", &profile, program])
-        .args(args)
-        .current_dir(dir);
+    let mut command = sandbox_exec()?;
+    let mut profile = format!(
+        "(version 1)(allow default)(deny file-read* file-write*)(allow file-read-metadata)(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library/Apple\") (subpath \"/private/var/db/dyld\") (literal \"/dev/null\") (literal \"/\") (subpath {}))(allow file-write* (literal \"/dev/null\"))",
+        sbpl_string(&dir.to_string_lossy())?
+    );
+    for writable in writes.iter().map(|p| p.as_path()).chain([scratch]) {
+        let quoted = sbpl_string(&writable.to_string_lossy())?;
+        profile.push_str(&format!("(allow file-read* file-write* (subpath {quoted}))"));
+    }
+    // Later rules win, so protected paths are denied even inside writable folders.
+    let root = regex_escape(&policy.root().to_string_lossy());
+    for pattern in policy.protected_patterns() {
+        let regex = format!("^{root}/{}$", glob_regex(pattern));
+        if regex.contains('"') || regex.chars().any(char::is_control) {
+            return Err(format!("protected pattern cannot be used in the sandbox profile: {pattern:?}").into());
+        }
+        profile.push_str(&format!("(deny file-read* file-write* (regex #\"{regex}\"))"));
+    }
+    command.args(["-p", &profile, program]).args(args).current_dir(dir).env("TMPDIR", scratch);
     Ok(command)
 }
 
+fn regex_escape(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if ".+*?()[]{}^$|\\".contains(ch) { out.push('\\'); }
+        out.push(ch);
+    }
+    out
+}
+
+/// Same matching rules as `permissions::glob`: `*` stays in one segment, `**` crosses them.
 fn glob_regex(pattern: &str) -> String {
-    let mut regex = String::from("^");
+    let mut regex = String::new();
     let mut chars = pattern.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
@@ -158,27 +222,25 @@ fn glob_regex(pattern: &str) -> String {
                 }
             }
             '*' => regex.push_str("[^/]*"),
-            '.' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                regex.push('\\');
-                regex.push(ch);
-            }
-            _ => regex.push(ch),
+            _ => regex.push_str(&regex_escape(&ch.to_string())),
         }
     }
-    regex.push('$');
     regex
 }
 
 /// CLI backends handle inference and login; project access belongs to harness tools.
 pub fn provider_command(program: &str, args: &[String], root: &std::path::Path) -> Result<Command> {
-    if !cfg!(target_os = "macos") {
-        return Err("CLI backends require the macOS filesystem sandbox; use an HTTP backend on this platform".into());
-    }
     let root = root.canonicalize()?;
-    let root = serde_json::to_string(&root.to_string_lossy())?;
-    let profile =
-        format!("(version 1)(allow default)(deny file-read-data file-write* (subpath {root}))");
-    let mut command = Command::new("/usr/bin/sandbox-exec");
+    if crate::permissions::Policy::load(&root, None)?.unsandboxed {
+        let mut command = Command::new(program);
+        command.args(args);
+        return Ok(command);
+    }
+    let mut command = sandbox_exec()?;
+    let profile = format!(
+        "(version 1)(allow default)(deny file-read-data file-write* (subpath {}))",
+        sbpl_string(&root.to_string_lossy())?
+    );
     command.args(["-p", &profile, program]).args(args);
     Ok(command)
 }
@@ -226,59 +288,90 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn sandbox_contains_custom_tools_and_native_provider_reads() {
-        let root = TestDir::new();
+        let base = TestDir::new();
         let external = TestDir::new();
-        let dir = root.path().join("tools/example");
+        // Regex metacharacters in the project path must be matched literally.
+        let project = base.path().join("acme+co (v1.0)");
+        let dir = project.join("tools/example");
+        let out = project.join("out");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(root.path().join("secret"), "project secret").unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(project.join("secret"), "project secret").unwrap();
         std::fs::write(external.path().join("secret"), "outside secret").unwrap();
         std::fs::write(dir.join("allowed"), "allowed").unwrap();
         std::fs::write(dir.join("private.pem"), "private").unwrap();
         std::fs::write(dir.join(".env"), "approval needed").unwrap();
         std::fs::write(
-            root.path().join("permissions.json"),
+            project.join("permissions.json"),
             r#"{"mode":"yolo","files":{"deny":["**/*.pem"],"approve":["**/.env"]}}"#,
         )
         .unwrap();
-        let policy = Policy::load(root.path(), None).unwrap();
+        let policy = Policy::load(&project, None).unwrap();
         let run_tool = |script: String| {
+            let scratch = Scratch::new().unwrap();
             let args = vec!["-c".into(), script];
             run(
-                tool_command("/bin/sh", &args, &dir, &policy).unwrap(),
+                tool_command("/bin/sh", &args, &dir, std::slice::from_ref(&out), scratch.path(), &policy).unwrap(),
                 vec![],
                 Duration::from_secs(5),
             )
             .unwrap()
         };
         let allowed = run_tool("cat allowed".into());
-        assert!(
-            allowed.status.success(),
-            "status={} stdout={} stderr={}",
-            allowed.status,
-            String::from_utf8_lossy(&allowed.stdout),
-            String::from_utf8_lossy(&allowed.stderr)
-        );
+        assert!(allowed.status.success(), "stderr={}", String::from_utf8_lossy(&allowed.stderr));
         assert_eq!(allowed.stdout, b"allowed");
+        let wrote = run_tool(format!(
+            "echo report > '{0}/report.txt' && echo tmp > \"$TMPDIR/t\" && cat \"$TMPDIR/t\" >/dev/null && cat '{0}/report.txt'",
+            out.display()
+        ));
+        assert!(wrote.status.success(), "stderr={}", String::from_utf8_lossy(&wrote.stderr));
+        assert_eq!(wrote.stdout, b"report\n");
         for script in [
             "cat ../../secret".to_string(),
             format!("cat '{}/secret'", external.path().display()),
             "cat private.pem".into(),
             "cat .env".into(),
             "echo changed > allowed".into(),
+            format!("echo x > '{}/permissions.json'", project.display()),
+            format!("echo x > '{}/key.pem'", out.display()),
         ] {
             let result = run_tool(script.clone());
             assert!(!result.status.success(), "unexpectedly allowed {script}");
         }
-        let args = vec![
-            "-c".into(),
-            format!("cat '{}/secret'", root.path().display()),
-        ];
+        assert!(!out.join("key.pem").exists());
+        let args = vec!["-c".into(), format!("cat '{}/secret'", project.display())];
         let provider = run(
-            provider_command("/bin/sh", &args, root.path()).unwrap(),
+            provider_command("/bin/sh", &args, &project).unwrap(),
             vec![],
             Duration::from_secs(5),
         )
         .unwrap();
         assert!(!provider.status.success());
+    }
+
+    #[test]
+    fn sandbox_opt_out_runs_tools_directly() {
+        let root = TestDir::new();
+        let dir = root.path().join("tools/example");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(root.path().join("permissions.json"), r#"{"sandbox":false}"#).unwrap();
+        let policy = Policy::load(root.path(), None).unwrap();
+        let scratch = Scratch::new().unwrap();
+        let args = vec!["-c".into(), "pwd; echo \"$TMPDIR\"".into()];
+        let command = tool_command("/bin/sh", &args, &dir, &[], scratch.path(), &policy).unwrap();
+        assert_eq!(command.get_program(), "/bin/sh");
+        let out = run(command, vec![], Duration::from_secs(5)).unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(text.contains(&*dir.to_string_lossy()) && text.contains(&*scratch.path().to_string_lossy()), "{text}");
+        assert_eq!(provider_command("/bin/sh", &[], root.path()).unwrap().get_program(), "/bin/sh");
+    }
+
+    #[test]
+    fn profile_quoting_refuses_unsafe_text() {
+        assert!(sbpl_string("/a/b c+d").is_ok());
+        for bad in ["/a\"b", "/a\\b", "/a\nb"] { assert!(sbpl_string(bad).is_err(), "{bad:?}"); }
+        assert_eq!(glob_regex("**/*.pem"), r"(.*/)?[^/]*\.pem");
+        assert_eq!(glob_regex("secrets/**"), "secrets/.*");
+        assert_eq!(regex_escape("/x+y (1).d"), r"/x\+y \(1\)\.d");
     }
 }

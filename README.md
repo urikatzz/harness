@@ -116,7 +116,7 @@ Everything lives next to the binary's working dir (or in `URITHEKING_HOME`):
 | Path | What it is |
 |---|---|
 | `COMPANY.md` | What the company and product are. Sent with every call. |
-| `tools/<name>/tool.json` | A company tool: `name`, `description`, `params`, `command`. The command runs in the tool's folder with arguments as JSON on stdin and as `ARG_<NAME>` env vars. Whatever it prints is the result. Any language works. |
+| `tools/<name>/tool.json` | A company tool: `name`, `description`, `params`, `command`, and optional `writes` (project folders it may write to). The command runs in the tool's folder with arguments as JSON on stdin and as `ARG_<NAME>` env vars. Whatever it prints is the result. Any language works. |
 | `skills/<name>/SKILL.md` | A playbook (frontmatter: `name`, `description`). The model loads it when it fits the task. |
 | `permissions.json` | Which tools and skills each role gets, file rules, and the approval mode. |
 
@@ -127,9 +127,10 @@ Built-in tools: `read_file`, `write_file`, `load_skill`.
 - `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
 - If roles are defined, a missing or unknown role gets no tools. Unreadable, malformed, or incorrectly typed permission files fail closed.
 - File tools normalize relative paths, reject traversal, symlinks and hard links, and open files through directory descriptors. Reads are limited to 1 MiB.
-- Custom commands run in the macOS filesystem sandbox: they may read their tool directory and system runtimes, but cannot write files or read other project/outside files. Denied and approval-required paths are unavailable to custom commands; use built-in file tools for those operations. Custom tools require `sandbox-exec`; unsupported platforms fail closed.
-- CLI backends also require the macOS sandbox and cannot read or write project contents through their native tools. Their login/configuration access remains available outside the project. HTTP backends do not require this sandbox.
+- Custom commands run in the macOS filesystem sandbox: they may read their tool directory and system runtimes, and read/write a private per-call temp folder (`$TMPDIR`, deleted afterwards) plus the folders listed in their `writes`. Everything else in or outside the project is off-limits. `writes` entries must be existing project folders below the top level, and never `tools/`, `skills/` or `sessions/`. Denied and approval-required paths stay unavailable to custom commands even inside `writes`; use built-in file tools for those.
+- CLI backends also run in the sandbox and cannot read or write project contents through their native tools. Their login/configuration access remains available outside the project. HTTP backends do not need the sandbox.
+- The sandbox uses `sandbox-exec`, which Apple has deprecated. It is checked once per run; if it is missing or broken, or on Linux/Windows, custom tools and CLI backends refuse to run and say why. Set `"sandbox": false` in `permissions.json` to run them without it. They then have your normal file access, so only do this when you trust the tools and backends. Path checks for built-in file tools still apply.
 - Custom commands have a 60-second deadline; CLI inference has a 120-second deadline. Both have an 8 MiB input limit and 1 MiB per-stream output limits, and their process groups are terminated on timeout or excess output.
-- Tool calls must be a single, complete `<tool_call>` response containing exactly `name` and an object `args`. Malformed or mixed responses stop the turn before tool execution.
+- Tool calls must be a single, complete `<tool_call>` response containing exactly `name` and an object `args`. A malformed or mixed response runs nothing; the model gets the error back and can resend (this counts toward the 10-step limit).
 
 In the chat: `/tools`, `/skills`, `/permissions`, `/reload` (re-reads everything after an edit).

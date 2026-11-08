@@ -17,6 +17,8 @@ pub enum Event<'a> {
     ToolCall { name: &'a str, args: &'a Value },
     ToolResult { name: &'a str, output: &'a str, ok: bool },
     Denied { name: &'a str, reason: &'a str },
+    /// The model sent a malformed tool call; nothing ran and it was asked to resend.
+    BadCall { error: &'a str },
     /// Older history was summarized to fit the context budget (tokens before, after).
     Compacted { before: usize, after: usize },
     /// Summarizing failed; the turn continues with the full history.
@@ -94,11 +96,25 @@ pub fn run_turn(
             Err(e) => on_event(Event::CompactFailed { error: e.to_string() }),
         }
         let reply = provider.complete(history)?;
-        let Some((name, args)) = parse_call(&reply)? else {
-            history.push(Message { role: Role::Assistant, content: reply.clone() });
-            return Ok(reply);
+        let parsed = parse_call(&reply);
+        history.push(Message { role: Role::Assistant, content: reply.clone() });
+        let (name, args) = match parsed {
+            Ok(Some(call)) => call,
+            Ok(None) => return Ok(reply),
+            // Nothing runs; the model gets the reason and a chance to resend a clean call.
+            Err(e) => {
+                let error = e.to_string();
+                on_event(Event::BadCall { error: &error });
+                history.push(Message {
+                    role: Role::User,
+                    content: format!(
+                        "<tool_result name=\"invalid_call\">\nerror: {error}. Nothing was run. To call a tool, reply with ONLY \
+                         {OPEN}{{\"name\": \"<tool>\", \"args\": {{...}}}}{CLOSE} and no other text; otherwise answer without the tag.\n</tool_result>"
+                    ),
+                });
+                continue;
+            }
         };
-        history.push(Message { role: Role::Assistant, content: reply });
         on_event(Event::ToolCall { name: &name, args: &args });
         let refusal = match policy.check(&name, &args) {
             Decision::Allow => None,
@@ -146,5 +162,25 @@ mod tests {
         assert_eq!(n, "x");
         assert_eq!(a["q"], 1);
         assert!(parse_call("plain answer").unwrap().is_none());
+    }
+
+    #[test]
+    fn malformed_call_is_sent_back_instead_of_ending_the_turn() {
+        use std::cell::RefCell;
+        struct Scripted(RefCell<Vec<&'static str>>);
+        impl Provider for Scripted {
+            fn complete(&self, _: &[Message]) -> Result<String> { Ok(self.0.borrow_mut().remove(0).into()) }
+        }
+        let provider = Scripted(RefCell::new(vec![
+            r#"Let me check. <tool_call>{"name":"read_file","args":{"path":"x"}}</tool_call>"#,
+            "all good",
+        ]));
+        let mut history = vec![Message { role: Role::User, content: "hi".into() }];
+        let mut bad = 0;
+        let reply = run_turn(&provider, &Toolbox::default(), &Policy::default(), &mut history,
+            |ev| if let Event::BadCall { .. } = ev { bad += 1 }, |_, _, _| false).unwrap();
+        assert_eq!(reply, "all good");
+        assert_eq!(bad, 1);
+        assert!(history.iter().any(|m| m.content.contains("invalid_call") && m.content.contains("Nothing was run")));
     }
 }
