@@ -167,6 +167,15 @@ impl Repl {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        // Save the current tab title, show ours, and put the old one back on exit.
+        print!("\x1b[22;0t\x1b]0;👑 uriTheKing\x07");
+        let result = self.run_loop();
+        print!("\x1b[23;0t");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        result
+    }
+
+    fn run_loop(&mut self) -> Result<()> {
         self.print_banner();
         let mut editor = LineEditor::new();
         loop {
