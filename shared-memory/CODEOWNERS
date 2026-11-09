@@ -1,0 +1,4 @@
+# Who must approve changes to shared memory. Turn on branch protection with "Require review from Code Owners".
+/memory/company/      @UriLootHeads
+/memory/teams/dev/    @UriLootHeads
+/memory/teams/art/    @UriLootHeads

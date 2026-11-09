@@ -30,7 +30,7 @@ pub fn resolve(root: &Path, path: &str) -> Result<PathBuf, String> {
 
 /// Walk directory descriptors without following symlinks, including during concurrent renames.
 #[cfg(unix)]
-pub fn open(root: &Path, path: &str, write: bool) -> crate::provider::Result<std::fs::File> {
+pub fn open(root: &Path, path: &str, write: bool) -> crate::error::Result<std::fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
     let resolved = resolve(root, path)?;
@@ -82,7 +82,7 @@ pub fn open(root: &Path, path: &str, write: bool) -> crate::provider::Result<std
 }
 
 #[cfg(not(unix))]
-pub fn open(_: &Path, _: &str, _: bool) -> crate::provider::Result<std::fs::File> {
+pub fn open(_: &Path, _: &str, _: bool) -> crate::error::Result<std::fs::File> {
     Err("secure file tools require Unix directory descriptors".into())
 }
 

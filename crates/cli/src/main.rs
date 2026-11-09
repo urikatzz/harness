@@ -5,7 +5,10 @@ mod repl;
 mod spinner;
 
 use repl::Repl;
-use uritheking_core::{agent, build_provider, toolbox, Message, Result, Role, Policy, Selection, Toolbox};
+use uritheking_core::{agent, build_provider, layout, prompt, Message, Policy, Selection, Toolbox};
+
+/// The app reports any error as text, so one boxed type is enough here.
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const DEFAULT_BACKEND: &str = "claude";
 
@@ -63,14 +66,10 @@ fn run() -> Result<()> {
     }
     match prompt {
         Some(p) => {
-            let tb = Toolbox::load(&toolbox::home());
-            let policy = Policy::load(&toolbox::home(), role)?;
-            let mut history = Vec::new();
-            let system = agent::system_prompt(&tb, &policy);
-            if !system.is_empty() {
-                history.push(Message { role: Role::System, content: system });
-            }
-            history.push(Message { role: Role::User, content: p });
+            let (layout, tb) = (layout(), Toolbox::open(layout().clone()));
+            let policy = Policy::load_with(&layout.company, &layout.project, role)?;
+            let mut history = prompt::conversation(&tb, &policy);
+            history.push(Message::user(p));
             let reply = agent::run_turn(build_provider(&selection)?.as_ref(), &tb, &policy, &mut history, |ev| {
                 if let agent::Event::ToolCall { name, args } = ev {
                     eprintln!("⚙ {name} {args}");
@@ -100,17 +99,17 @@ fn run() -> Result<()> {
 
 fn run_evals(selection: &Selection, role: Option<String>) -> Result<()> {
     use uritheking_core::eval;
-    let home = toolbox::home();
-    let tb = Toolbox::load(&home);
-    let (cases, errors) = eval::load(&home);
+    let layout = layout();
+    let tb = Toolbox::open(layout.clone());
+    let (cases, errors) = eval::load(&layout.company);
     for e in &errors { eprintln!("✗ {e}"); }
     if cases.is_empty() {
-        return Err(format!("no eval cases in {}", home.join("evals").display()).into());
+        return Err(format!("no eval cases in {}", layout.company.join("evals").display()).into());
     }
     let provider = build_provider(selection)?;
     let mut failed = errors.len();
     for case in &cases {
-        let policy = Policy::load(&home, case.role.clone().or_else(|| role.clone()))?;
+        let policy = Policy::load_with(&layout.company, &layout.project, case.role.clone().or_else(|| role.clone()))?;
         let outcome = eval::run(provider.as_ref(), &tb, &policy, case);
         if outcome.passed() {
             println!("✓ {}", outcome.name);

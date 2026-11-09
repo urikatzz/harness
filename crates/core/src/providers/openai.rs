@@ -1,5 +1,6 @@
 use crate::interrupt;
-use crate::provider::{Message, Provider, Reply, Result};
+use crate::error::{Error, Result};
+use crate::provider::{Message, Provider, Reply};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -107,12 +108,12 @@ impl Provider for OpenAiCompatible {
 
         // Runs off-thread so Ctrl-C can abandon a request that's taking too long.
         let sent = interrupt::cancellable(move || match req.send_json(payload) {
-            Ok(resp) => resp.into_json::<Value>().map_err(|e| e.to_string()),
+            Ok(resp) => resp.into_json::<Value>().map_err(Error::from),
             // Surface the server's error body; it usually says what's wrong (bad model, bad key).
             Err(ureq::Error::Status(code, resp)) => {
-                Err(format!("HTTP {code}: {}", resp.into_string().unwrap_or_default()))
+                Err(Error::Http(format!("HTTP {code}: {}", resp.into_string().unwrap_or_default())))
             }
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(Error::from(e)),
         })?;
         let body = sent?;
 

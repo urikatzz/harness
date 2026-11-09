@@ -1,0 +1,1 @@
+- design: Art team design guide: style, colors, type and asset rules (fill in the TODOs)

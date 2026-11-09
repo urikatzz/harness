@@ -1,6 +1,7 @@
 //! Keeps history inside the model's context window by summarizing older messages.
 
-use crate::provider::{Message, Provider, Result, Role};
+use crate::error::Result;
+use crate::provider::{Kind, Message, Provider, Role};
 
 /// Rough token budget before old messages get summarized (`URITHEKING_CONTEXT_TOKENS`).
 const DEFAULT_BUDGET: usize = 60_000;
@@ -42,35 +43,27 @@ pub fn compact(provider: &dyn Provider, history: &mut Vec<Message>) -> Result<bo
         .map(|m| format!("[{}]\n{}\n\n", m.role.as_str(), m.content))
         .collect();
     let request = vec![
-        Message {
-            role: Role::System,
-            content: "You summarize conversations so they can continue later without the full text.".into(),
-        },
-        Message {
-            role: Role::User,
-            content: format!(
+        Message::system("You summarize conversations so they can continue later without the full text."),
+        Message::user(format!(
                 "Summarize this conversation between a user and an assistant that uses tools. Keep: \
                  the user's goals and preferences, decisions made, facts and results learned from tools \
                  (file paths, names, numbers), work done, and what is still open. Be concise. \
                  Reply with the summary only.\n\n<conversation>\n{transcript}</conversation>"
-            ),
-        },
+        )),
     ];
     let summary = provider.complete(&request)?;
 
     let replacement = [
-        Message {
-            role: Role::User,
-            content: format!("<summary>\nSummary of the earlier conversation:\n{}\n</summary>", summary.trim()),
-        },
-        Message { role: Role::Assistant, content: "Understood, I'll continue from that summary.".into() },
+        Message::summary(format!("<summary>\nSummary of the earlier conversation:\n{}\n</summary>", summary.trim())),
+        Message::assistant("Understood, I'll continue from that summary."),
     ];
     history.splice(start..cut, replacement);
     Ok(true)
 }
 
+/// A safe place to cut: a user message that is not a tool result.
 fn is_user_turn(m: &Message) -> bool {
-    m.role == Role::User && !m.content.starts_with("<tool_result")
+    m.role == Role::User && !matches!(m.kind, Kind::ToolResult { .. })
 }
 
 #[cfg(test)]
@@ -85,7 +78,12 @@ mod tests {
     }
 
     fn msg(role: Role, c: &str) -> Message {
-        Message { role, content: c.into() }
+        match role {
+            Role::System => Message::system(c),
+            Role::User if c.starts_with("<tool_result") => Message::tool_result(c, false),
+            Role::User => Message::user(c),
+            Role::Assistant => Message::assistant(c),
+        }
     }
 
     #[test]

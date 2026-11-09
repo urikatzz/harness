@@ -1,7 +1,8 @@
 //! Arrow-key menus for choosing backend → model → effort.
 
 use uritheking_core::catalog::{self, ModelOption};
-use uritheking_core::{Result, Selection};
+use crate::Result;
+use uritheking_core::Selection;
 use inquire::{InquireError, Select};
 
 const DEFAULT_LABEL: &str = "default";

@@ -17,20 +17,42 @@
 //! files or reach the network are recorded and then declined.
 
 use crate::agent::{self, Event};
+use crate::error::{Error, Result};
 use crate::permissions::{Policy, ASK_MODE};
-use crate::provider::{Message, Provider, Result, Role};
-use crate::toolbox::Toolbox;
-use serde_json::Value;
+use crate::prompt;
+use crate::provider::{Message, Provider};
+use crate::tools::Toolbox;
+use serde::Deserialize;
 use std::path::Path;
+
+/// `evals/<name>.json` exactly as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CaseFile {
+    prompt: String,
+    role: Option<String>,
+    #[serde(default)]
+    expect: Expect,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Expect {
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    no_tools: Vec<String>,
+    #[serde(default)]
+    reply_contains: Vec<String>,
+    #[serde(default)]
+    reply_not_contains: Vec<String>,
+}
 
 pub struct Case {
     pub name: String,
     pub prompt: String,
     pub role: Option<String>,
-    tools: Vec<String>,
-    no_tools: Vec<String>,
-    reply_contains: Vec<String>,
-    reply_not_contains: Vec<String>,
+    expect: Expect,
 }
 
 pub struct Outcome {
@@ -45,30 +67,10 @@ impl Outcome {
     pub fn passed(&self) -> bool { self.failures.is_empty() }
 }
 
-fn strings(v: &Value, key: &str) -> Result<Vec<String>> {
-    match &v[key] {
-        Value::Null => Ok(Vec::new()),
-        Value::Array(items) if items.iter().all(Value::is_string) => {
-            Ok(items.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
-        }
-        _ => Err(format!("expect.{key} must be a list of strings").into()),
-    }
-}
-
 fn parse_case(name: String, raw: &str) -> Result<Case> {
-    let v: Value = serde_json::from_str(raw)?;
-    let prompt = v["prompt"].as_str().filter(|p| !p.trim().is_empty()).ok_or("needs a \"prompt\"")?.to_string();
-    let expect = &v["expect"];
-    if !expect.is_null() && !expect.is_object() { return Err("\"expect\" must be an object".into()); }
-    Ok(Case {
-        name,
-        prompt,
-        role: v["role"].as_str().map(str::to_owned),
-        tools: strings(expect, "tools")?,
-        no_tools: strings(expect, "no_tools")?,
-        reply_contains: strings(expect, "reply_contains")?,
-        reply_not_contains: strings(expect, "reply_not_contains")?,
-    })
+    let file: CaseFile = serde_json::from_str(raw).map_err(|e| Error::config(e.to_string()))?;
+    if file.prompt.trim().is_empty() { return Err(Error::config("needs a \"prompt\"")); }
+    Ok(Case { name, prompt: file.prompt, role: file.role, expect: file.expect })
 }
 
 /// All cases in `<root>/evals/`, sorted by name, plus any files that could not be read.
@@ -89,32 +91,30 @@ pub fn load(root: &Path) -> (Vec<Case>, Vec<String>) {
 
 /// Runs one case in a fresh conversation.
 pub fn run(provider: &dyn Provider, tb: &Toolbox, policy: &Policy, case: &Case) -> Outcome {
-    let mut history = Vec::new();
-    let system = agent::system_prompt(tb, policy);
-    if !system.is_empty() { history.push(Message { role: Role::System, content: system }); }
-    history.push(Message { role: Role::User, content: case.prompt.clone() });
+    let mut history = prompt::conversation(tb, policy);
+    history.push(Message::user(case.prompt.clone()));
     let mut tools_called = Vec::new();
     // Ask about every call; say yes only to plain read-only ones.
     let eval_policy = policy.for_eval();
     let result = agent::run_turn(provider, tb, &eval_policy, &mut history,
         |ev| if let Event::ToolCall { name, .. } = ev { tools_called.push(name.to_string()) },
-        |name, _, why| why == ASK_MODE && !tb.has_side_effects(name));
+        |name, _, why| why == ASK_MODE && tb.get(name).is_some_and(|t| !t.effects().any()));
     let mut failures = Vec::new();
     let reply = match result {
         Ok(reply) => reply,
         Err(e) => { failures.push(format!("turn failed: {e}")); String::new() }
     };
-    for tool in &case.tools {
+    for tool in &case.expect.tools {
         if !tools_called.contains(tool) { failures.push(format!("expected a call to `{tool}`")); }
     }
-    for tool in &case.no_tools {
+    for tool in &case.expect.no_tools {
         if tools_called.contains(tool) { failures.push(format!("`{tool}` should not have been called")); }
     }
     let lower = reply.to_lowercase();
-    for text in &case.reply_contains {
+    for text in &case.expect.reply_contains {
         if !lower.contains(&text.to_lowercase()) { failures.push(format!("reply is missing {text:?}")); }
     }
-    for text in &case.reply_not_contains {
+    for text in &case.expect.reply_not_contains {
         if lower.contains(&text.to_lowercase()) { failures.push(format!("reply should not contain {text:?}")); }
     }
     Outcome { name: case.name.clone(), failures, tools_called, reply }
@@ -125,6 +125,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    use crate::provider::Message;
     struct Script(RefCell<Vec<&'static str>>);
     impl Provider for Script {
         fn complete(&self, _: &[Message]) -> Result<String> { Ok(self.0.borrow_mut().remove(0).into()) }

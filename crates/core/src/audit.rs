@@ -1,9 +1,9 @@
-//! Append-only record of every tool call: `<home>/logs/audit.jsonl`, one JSON object per line.
+//! Append-only record of every tool call: `<data>/logs/audit.jsonl`, one JSON object per line.
 //!
 //! Each call writes a `decision` line before anything runs (allowed, approved, declined, denied,
 //! invalid) and, if it ran, a `result` line. If the decision can't be recorded, the call is refused.
 
-use crate::provider::Result;
+use crate::error::Result;
 use serde_json::{json, Map, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ pub fn record(root: &Path, mut entry: Map<String, Value>) -> Result<()> {
     }
     let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
     entry.insert("ts".into(), json!(millis));
+    std::fs::create_dir_all(root)?;
     let dir = root.join("logs");
     match std::fs::symlink_metadata(&dir) {
         Ok(m) if !m.is_dir() || m.file_type().is_symlink() => return Err("logs/ must be a real folder".into()),

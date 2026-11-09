@@ -23,11 +23,19 @@ uritheking codex gpt-5 -p "hello"
 A Cargo workspace with two crates:
 
 - `crates/core` (`uritheking-core`, library) – talks to models; no terminal code.
-  - `provider.rs` – `Provider` trait, `Message`, `Selection`.
+  - `provider.rs` – `Provider` trait, `Message` (with its `Kind`: chat, tool result, summary), `Selection`.
   - `providers/mod.rs` – `build_provider`: picks the backend.
   - `providers/openai.rs` – any OpenAI-compatible server (openrouter, local).
   - `providers/cli.rs` – shells out to an agent CLI (claude, codex).
   - `catalog.rs` – which models each backend offers and their effort levels.
+  - `agent.rs` – the tool loop: ask the model, check, run and audit each call, verify.
+  - `prompt.rs` – the system prompt.
+  - `tools/` – the `Tool` trait, built-in tools, custom `tool.json` tools and skills.
+  - `permissions.rs` – `permissions.json` and the per-call decision.
+  - `sandbox/` – the OS sandbox for tools and CLI backends (`macos.rs`, `linux.rs`).
+  - `process.rs` – subprocesses with time and output limits.
+  - `session.rs`, `context.rs`, `audit.rs`, `eval.rs` – saved chats, summarizing, audit log, evals.
+  - `error.rs` – the library's `Error` type.
 - `crates/cli` (`uritheking`, binary) – the terminal app.
   - `main.rs` – argument parsing.
   - `repl.rs` – chat session: banner, slash commands, `!` shell.
@@ -36,6 +44,8 @@ A Cargo workspace with two crates:
 
 Adding a backend = one struct implementing `Provider` in `crates/core/src/providers/`,
 plus one arm in `build_provider` and one in `catalog::models_for`.
+Adding a built-in tool = one struct implementing `Tool` in `crates/core/src/tools/builtin.rs`,
+listed in `builtin::all`.
 
 ## Behavior
 
@@ -111,7 +121,16 @@ plus one arm in `build_provider` and one in `catalog::models_for`.
 
 ## Company tools, skills and permissions
 
-Everything lives next to the binary's working dir (or in `URITHEKING_HOME`):
+The harness uses four folders, split by who owns the data (the same idea as Claude Code):
+
+| Folder | Where | What's in it |
+|---|---|---|
+| project | the folder you start `uritheking` in | your code; the only place `read_file` / `write_file` work |
+| company | `/Library/Application Support/Uritheking` (macOS), `/etc/uritheking` (Linux), or `URITHEKING_COMPANY` | `COMPANY.md`, `tools/`, `skills/`, `permissions.json`, `evals/`. Installed by IT so users can't edit it. If it's missing, the project folder is used (fine for development, but not locked). |
+| data | `~/.uritheking/projects/<project path>/` (`URITHEKING_USER_DIR` replaces `~/.uritheking`) | this user's `sessions/`, `logs/audit.jsonl` and personal `memory/` for this project |
+| shared | `~/.uritheking/shared` or `URITHEKING_SHARED` | a clone of the company memory repo: `memory/teams/<role>/`, `memory/company/`. Start it from `shared-memory/` in this repo. |
+
+Files in the company folder:
 
 | Path | What it is |
 |---|---|
@@ -120,16 +139,78 @@ Everything lives next to the binary's working dir (or in `URITHEKING_HOME`):
 | `skills/<name>/SKILL.md` | A playbook (frontmatter: `name`, `description`). The model loads it when it fits the task. |
 | `permissions.json` | Which tools and skills each role gets, file rules, the approval mode, and the optional `verify` tool. |
 | `evals/<name>.json` | Eval cases: a prompt and what should happen. Run with `uritheking eval`. |
+| `owners` in `permissions.json` | Roles that may change company memory. |
+
+Memory (`<name>.md` with frontmatter, plus a `MEMORY.md` index in every scope folder; safe to edit by hand, then `/reload`):
+
+| Scope | Folder | Who reads it | Who writes it |
+|---|---|---|---|
+| personal | `<data>/memory/` | only this user, in this project, when the role has `remember` | the user, via `remember` / `forget` |
+| team | `<shared>/memory/teams/<role>/` | everyone in that role | members of that role, then commit and push |
+| company | `<shared>/memory/company/` | everyone | owners only, then commit and push |
 | `logs/audit.jsonl` | Written by the harness: every tool call, who made it and what was decided. |
 
-Built-in tools: `read_file`, `write_file`, `load_skill`.
+Built-in tools: `read_file`, `write_file`, `load_skill`, `remember`, `forget`.
+
+#### Scenario: Remember a fact across sessions
+
+- **GIVEN** a role allowed to use `remember`
+- **WHEN** the model calls `remember` with `name`, `description` and `content` and the user approves
+- **THEN** `memory/<name>.md` is written and `memory/MEMORY.md` lists it as `- <name>: <description>`
+- **AND** the next session (or `/reload`) puts that index in the system prompt inside `<memory>`
+
+#### Scenario: Save a team memory
+- **GIVEN** a user with role `sales`
+- **WHEN** they ask to remember something for the team and the model calls `remember` with `scope: "team"`
+- **THEN** it is written to `<shared>/memory/teams/sales/` and the result says to commit and push it
+- **AND** after they pull, every `sales` user sees it inside `<memory scope="team sales">`, and other roles don't
+
+#### Scenario: Only owners write company memory
+- **GIVEN** `permissions.json` has `"owners": ["owner"]`
+- **WHEN** a user whose role isn't listed calls `remember` or `forget` with `scope: "company"`
+- **THEN** the call fails with "only owners can change company memory" and nothing is written
+- **AND** the owner's calls are written to `<shared>/memory/company/`, which every role sees inside `<memory scope="company">`
+
+#### Scenario: No memory repo cloned yet
+- **GIVEN** nothing at `~/.uritheking/shared` and no `URITHEKING_SHARED`
+- **WHEN** the model saves a team or company memory
+- **THEN** the call fails and says where to clone the company memory repo
+- **AND** personal memory still works
+
+#### Scenario: Sessions and memory follow the user, not the repo
+- **GIVEN** a user working in `/work/app`
+- **WHEN** they chat and save a personal memory
+- **THEN** the session and memory go to `~/.uritheking/projects/-work-app/`, never into `/work/app`
+- **AND** opening another project starts with that project's own sessions and memory
+
+#### Scenario: Sessions don't fill memory on their own
+- **GIVEN** any session
+- **WHEN** the conversation ends
+- **THEN** nothing is saved to memory unless `remember` was called and approved
+- **AND** the default scope is `personal`; the model uses `team` or `company` only when the user asks to share
+
+With the company folder installed where users can't write, users can't change `permissions.json` to get around the owner check. Git protects the shared memory repo too: `shared-memory/CODEOWNERS` lists who must approve each folder (turn on branch protection with "Require review from Code Owners").
+
+#### Scenario: Replace or forget a memory
+
+- **GIVEN** a saved memory `db-choice`
+- **WHEN** the model calls `remember` with the same name, or `forget` with `{"name": "db-choice"}`
+- **THEN** the file is overwritten or deleted and the index is rebuilt
+- **AND** forgetting an unknown name returns an error and changes nothing
+
+#### Scenario: Memory stays safe
+
+- **GIVEN** a name that is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`), or a symlinked `memory/` folder
+- **WHEN** `remember` or `forget` runs
+- **THEN** the call fails and nothing outside `memory/` is touched
+- **AND** `write_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB
 
 **Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
 - `"mode": "ask"` asks y/N before every tool call. `"yolo"` runs calls without asking.
 - `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
-- Built in, whatever the file says: `write_file` can never touch `sessions/` or `logs/`, and writing `permissions.json`, `COMPANY.md`, `tools/` or `skills/` always needs a manual yes (they control what the model may do).
+- Built in, whatever the file says: `write_file` can never touch `sessions/`, `logs/` or `memory/`, and writing `permissions.json`, `COMPANY.md`, `tools/` or `skills/` always needs a manual yes (they control what the model may do).
 - **Untrusted output.** File contents and tool output can contain instructions planted by someone else. The model is told to treat `<tool_result>` text as data, and tool output can't fake its own end tag or a tool call. Once any tool output is in the conversation, calls that can change things (`write_file`, tools with `writes` or `network`) need a manual yes even in yolo. Set `"trust_tool_output": true` to turn that off.
-- If roles are defined, a missing or unknown role gets no tools. Unreadable, malformed, or incorrectly typed permission files fail closed.
+- If roles are defined, a missing or unknown role gets no tools. Unreadable, malformed, or incorrectly typed permission files fail closed. Unknown keys in `permissions.json`, `tool.json` and eval cases are errors, so a typo like `"verfy"` is reported instead of ignored.
 - File tools normalize relative paths, reject traversal, symlinks and hard links, and open files through directory descriptors. Reads are limited to 1 MiB.
 - Custom commands run in a filesystem sandbox: they may read their tool directory, system runtimes and their `reads` folders, and read/write a private per-call temp folder (`$TMPDIR`, deleted afterwards) plus the folders listed in their `writes`. Everything else in or outside the project is off-limits, and so are `sessions/` and `logs/`. `writes` entries must be existing project folders below the top level, and never `tools/`, `skills/`, `sessions/` or `logs/`. Denied and approval-required paths stay unavailable to custom commands even inside `reads`/`writes`; use built-in file tools for those.
 - Custom commands get no network unless their `tool.json` says `"network": true`, and a clean environment: only `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR`, their `ARG_*` values and the variables named in `env`. API keys and tokens are not passed on.

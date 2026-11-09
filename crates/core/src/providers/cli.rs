@@ -1,13 +1,17 @@
-use crate::provider::{Message, Provider, Result, Role};
+use crate::error::Result;
+use crate::provider::{Message, Provider, Role};
+use std::path::PathBuf;
 
 /// Delegates to an installed agent CLI (`claude`, `codex`), which uses its own login.
 pub struct CliProvider {
     program: &'static str,
     args: Vec<String>,
+    /// The project, which the sandbox hides from the CLI.
+    root: PathBuf,
 }
 
 impl CliProvider {
-    pub fn claude(model: Option<String>, effort: Option<String>) -> Self {
+    pub fn claude(model: Option<String>, effort: Option<String>, root: PathBuf) -> Self {
         // `--tools ""` turns off Claude Code's own tools, so file access only goes through
         // the harness tools and their permission checks; `--strict-mcp-config` drops the
         // user's MCP servers for the same reason.
@@ -18,10 +22,10 @@ impl CliProvider {
         if let Some(e) = effort {
             args.extend(["--effort".into(), e]);
         }
-        Self { program: "claude", args }
+        Self { program: "claude", args, root }
     }
 
-    pub fn codex(model: Option<String>, effort: Option<String>) -> Self {
+    pub fn codex(model: Option<String>, effort: Option<String>, root: PathBuf) -> Self {
         // Read-only sandbox: we only want text back, not file edits.
         let mut args: Vec<String> = ["exec", "-s", "read-only", "--skip-git-repo-check", "--ephemeral"]
             .map(String::from)
@@ -32,7 +36,7 @@ impl CliProvider {
         if let Some(e) = effort {
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{e}\"")]);
         }
-        Self { program: "codex", args }
+        Self { program: "codex", args, root }
     }
 }
 
@@ -53,7 +57,7 @@ fn flatten(history: &[Message]) -> String {
 
 impl Provider for CliProvider {
     fn complete(&self, history: &[Message]) -> Result<String> {
-        let mut command = crate::process::provider_command(self.program, &self.args, &crate::toolbox::home())?;
+        let mut command = crate::sandbox::provider_command(self.program, &self.args, &self.root, &crate::layout().company)?;
         if self.program == "codex" { command.arg("-"); }
         let output = crate::process::run(command, flatten(history).into_bytes(), std::time::Duration::from_secs(120))
             .map_err(|e| format!("could not run `{}`: {e}", self.program))?;

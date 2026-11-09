@@ -1,7 +1,7 @@
 //! Which models each backend offers, and which effort levels each model accepts.
 
 use crate::providers::openai;
-use crate::provider::Result;
+use crate::error::Result;
 use serde_json::Value;
 
 pub const BACKENDS: [&str; 4] = ["claude", "codex", "local", "openrouter"];

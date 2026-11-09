@@ -4,7 +4,8 @@ pub mod cli;
 pub mod openai;
 
 use crate::catalog::{local_base_url, OPENROUTER_URL};
-use crate::provider::{Provider, Result, Selection};
+use crate::error::Result;
+use crate::provider::{Provider, Selection};
 use cli::CliProvider;
 use openai::{EffortStyle, OpenAiCompatible};
 
@@ -25,8 +26,8 @@ pub fn build_provider(sel: &Selection) -> Result<Box<dyn Provider>> {
             };
             Box::new(OpenAiCompatible::new(base, None, model, effort, EffortStyle::OpenAi))
         }
-        "claude" => Box::new(CliProvider::claude(model, effort)),
-        "codex" => Box::new(CliProvider::codex(model, effort)),
+        "claude" => Box::new(CliProvider::claude(model, effort, crate::layout().project.clone())),
+        "codex" => Box::new(CliProvider::codex(model, effort, crate::layout().project.clone())),
         other => return Err(format!("unknown backend `{other}` (use claude, codex, local or openrouter)").into()),
     })
 }

@@ -2,12 +2,13 @@
 
 use crate::picker;
 use crate::spinner::Spinner;
-use uritheking_core::agent::{self, Event};
-use uritheking_core::{catalog, context};
-use uritheking_core::session::{self, Session};
-use uritheking_core::{toolbox, Message, Provider, Result, Role, Policy, Selection, Toolbox};
 use crate::input::{resolve, LineEditor, Read};
+use crate::Result;
 use std::process::Command as Shell;
+use uritheking_core::agent::{self, Event};
+use uritheking_core::session::{self, Session};
+use uritheking_core::{catalog, context, prompt};
+use uritheking_core::{Layout, Message, Policy, Provider, Selection, Toolbox};
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
@@ -16,7 +17,7 @@ const RED: &str = "\x1b[31m";
 const RESET: &str = "\x1b[0m";
 
 /// Builds a provider from a backend name and optional model (injected so the REPL stays backend-agnostic).
-pub type ProviderFactory = fn(&Selection) -> Result<Box<dyn Provider>>;
+pub type ProviderFactory = fn(&Selection) -> uritheking_core::Result<Box<dyn Provider>>;
 
 /// What one line of user input asks for.
 enum Input<'a> {
@@ -70,6 +71,8 @@ pub struct Repl {
     toolbox: Toolbox,
     policy: Policy,
     role: Option<String>,
+    /// Project, company setup, this user's data and the shared memory repo.
+    layout: Layout,
     session: Session,
 }
 
@@ -77,11 +80,12 @@ impl Repl {
     /// `resume_latest` reopens the newest saved session (`--continue`).
     pub fn new(factory: ProviderFactory, selection: Selection, role: Option<String>, resume_latest: bool) -> Result<Self> {
         let provider = factory(&selection)?;
-        let session = Session::new(&toolbox::home());
-        let mut repl = Self { factory, provider, selection, history: Vec::new(), toolbox: Toolbox::default(), policy: Policy::default(), role, session };
+        let layout = uritheking_core::layout().clone();
+        let session = Session::new(&layout.data);
+        let mut repl = Self { factory, provider, selection, history: Vec::new(), toolbox: Toolbox::default(), policy: Policy::default(), role, layout, session };
         repl.reload();
         if resume_latest {
-            match session::list(&toolbox::home()).first() {
+            match session::list(&repl.layout.data).first() {
                 Some(latest) => repl.resume(&latest.id.clone()),
                 None => println!("{DIM}no saved sessions yet — starting fresh{RESET}"),
             }
@@ -91,7 +95,7 @@ impl Repl {
 
     /// Loads a saved session behind a fresh system prompt; later turns save back to it.
     fn resume(&mut self, id: &str) {
-        let session = Session::open(&toolbox::home(), id);
+        let session = Session::open(&self.layout.data, id);
         match session.load() {
             Ok(msgs) => {
                 self.reset_history();
@@ -108,7 +112,7 @@ impl Repl {
         if let Some(id) = id {
             return self.resume(id);
         }
-        let sessions = session::list(&toolbox::home());
+        let sessions = session::list(&self.layout.data);
         if sessions.is_empty() {
             return println!("{DIM}no saved sessions{RESET}\n");
         }
@@ -143,8 +147,8 @@ impl Repl {
 
     /// Re-reads tools/ and skills/ and restarts the conversation with the new instructions.
     fn reload(&mut self) {
-        self.toolbox = Toolbox::load(&toolbox::home());
-        match Policy::load(&toolbox::home(), self.role.clone()) {
+        self.toolbox = Toolbox::open(self.layout.clone());
+        match Policy::load_with(&self.layout.company, &self.layout.project, self.role.clone()) {
             Ok(p) => self.policy = p,
             // Fail closed: a broken permissions file must not mean "allow everything".
             Err(e) => {
@@ -155,18 +159,26 @@ impl Repl {
         for w in &self.toolbox.warnings {
             println!("{RED}skipped {w}{RESET}");
         }
-        if !self.policy.can_use_tool("read_file") && !self.policy.can_use_tool("write_file") {
-            println!("{GOLD}⚠ File tools unavailable for this role. Check /permissions; restart with --role <authorized-role> (e.g. dev in the example configuration).{RESET}");
-        }
+        self.warn_if_no_file_tools();
         self.reset_history();
     }
 
-    fn reset_history(&mut self) {
-        self.history.clear();
-        let system = agent::system_prompt(&self.toolbox, &self.policy);
-        if !system.is_empty() {
-            self.history.push(Message { role: Role::System, content: system });
+    /// Points at the roles that do have file access, so the user knows what to restart with.
+    fn warn_if_no_file_tools(&self) {
+        if self.policy.can_use_tool("read_file") || self.policy.can_use_tool("write_file") {
+            return;
         }
+        let mut roles = self.policy.roles_with_tool("write_file");
+        if roles.is_empty() { roles = self.policy.roles_with_tool("read_file"); }
+        let hint = match roles.as_slice() {
+            [] => "no configured role has them; see permissions.json".to_string(),
+            roles => format!("restart with --role {}", roles.join(" | ")),
+        };
+        println!("{GOLD}⚠ File tools unavailable for this role. Check /permissions; {hint}.{RESET}");
+    }
+
+    fn reset_history(&mut self) {
+        self.history = prompt::conversation(&self.toolbox, &self.policy);
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -198,13 +210,13 @@ impl Repl {
                 Input::Skills => self.print_skills(),
                 Input::Reload => {
                     self.reload();
-                    println!("{DIM}loaded {} tools, {} skills{RESET}\n", self.toolbox.tools.len(), self.toolbox.skills.len());
+                    println!("{DIM}loaded {} tools, {} skills{RESET}\n", self.toolbox.custom_tools().len(), self.toolbox.skills.len());
                 }
                 Input::Compact => self.compact_command(),
                 Input::Resume(id) => self.resume_command(id),
                 Input::Clear => {
                     self.reset_history();
-                    self.session = Session::new(&toolbox::home());
+                    self.session = Session::new(&self.layout.data);
                     // Wipe screen and scrollback, then start over like a fresh launch.
                     print!("\x1b[2J\x1b[3J\x1b[H");
                     self.print_banner();
@@ -218,7 +230,7 @@ impl Repl {
     }
 
     fn chat(&mut self, text: &str) {
-        self.history.push(Message { role: Role::User, content: text.to_string() });
+        self.history.push(Message::user(text));
         let mut spinner: Option<Spinner> = None;
         let result = agent::run_turn(self.provider.as_ref(), &self.toolbox, &self.policy, &mut self.history, |ev| {
             // Any event means the model answered: clear the spinner before printing.
@@ -251,22 +263,20 @@ impl Repl {
             }
             Err(e) => {
                 println!("{RED}error: {e}{RESET}\n");
-                self.history.push(Message {
-                    role: Role::Assistant,
-                    content: format!("Turn interrupted: {e}. Earlier tool calls may already have completed; inspect their results before retrying."),
-                });
+                self.history.push(Message::assistant(format!(
+                    "Turn interrupted: {e}. Earlier tool calls may already have completed; inspect their results before retrying."
+                )));
                 self.save();
             }
         }
     }
 
     fn print_tools(&self) {
-        if self.toolbox.tools.is_empty() {
-            println!("{DIM}no tools — add tools/<name>/tool.json under {}{RESET}\n", toolbox::home().display());
-            return;
+        for t in self.toolbox.available(&self.policy) {
+            println!("  {BOLD}{}{RESET}  {DIM}{}{RESET}", t.name(), t.description());
         }
-        for t in self.toolbox.tools.iter().filter(|t| self.policy.can_use_tool(&t.name)) {
-            println!("  {BOLD}{}{RESET}  {DIM}{}{RESET}", t.name, t.description);
+        if self.toolbox.custom_tools().is_empty() {
+            println!("{DIM}no company tools — add tools/<name>/tool.json under {}{RESET}", self.layout.company.display());
         }
         println!();
     }
@@ -275,20 +285,20 @@ impl Repl {
         let p = &self.policy;
         println!("  {BOLD}role{RESET}  {}", p.role.as_deref().unwrap_or("none (set --role or URITHEKING_ROLE)"));
         println!("  {BOLD}mode{RESET}  {}", if p.yolo { "yolo — tools run without asking" } else { "ask — confirm each tool call" });
-        let tools: Vec<&str> = toolbox::BUILTINS.iter().map(|b| b.0).chain(self.toolbox.tools.iter().map(|t| t.name.as_str())).collect();
-        for t in tools {
-            let ok = p.can_use_tool(t);
-            println!("    {}{} {t}{RESET}", if ok { "" } else { DIM }, if ok { "✓" } else { "✗" });
+        let available: Vec<&str> = self.toolbox.available(p).map(|t| t.name()).collect();
+        for t in self.toolbox.tools() {
+            let ok = available.contains(&t.name());
+            println!("    {}{} {}{RESET}", if ok { "" } else { DIM }, if ok { "✓" } else { "✗" }, t.name());
         }
-        println!("  {DIM}rules: permissions.json in {}{RESET}\n", toolbox::home().display());
+        println!("  {DIM}rules: permissions.json in {}{RESET}\n", self.layout.company.display());
     }
 
     fn print_skills(&self) {
         if self.toolbox.skills.is_empty() {
-            println!("{DIM}no skills — add skills/<name>/SKILL.md under {}{RESET}\n", toolbox::home().display());
+            println!("{DIM}no skills — add skills/<name>/SKILL.md under {}{RESET}\n", self.layout.company.display());
             return;
         }
-        for s in self.toolbox.skills.iter().filter(|s| self.policy.can_use_skill(&s.name)) {
+        for s in self.toolbox.allowed_skills(&self.policy) {
             println!("  {BOLD}{}{RESET}  {DIM}{}{RESET}", s.name, s.description);
         }
         println!();
@@ -434,7 +444,7 @@ mod tests {
 
     struct FailsAfterWrite(Cell<usize>);
     impl Provider for FailsAfterWrite {
-        fn complete(&self, _: &[Message]) -> Result<String> {
+        fn complete(&self, _: &[Message]) -> uritheking_core::Result<String> {
             let call = self.0.get();
             self.0.set(call + 1);
             if call == 0 {
@@ -457,6 +467,7 @@ mod tests {
             toolbox: Toolbox::load(&home),
             policy: Policy::load(&home, None).unwrap(),
             role: None,
+            layout: Layout::single(&home),
             session: Session::new(&home),
         };
         repl.chat("write the result");

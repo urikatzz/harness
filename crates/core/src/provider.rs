@@ -1,8 +1,8 @@
-use std::error::Error;
+pub use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 
-pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
     User,
@@ -19,9 +19,56 @@ impl Role {
     }
 }
 
+/// What a message is, so the harness never has to guess from its text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// Something a person or the model wrote.
+    #[default]
+    Chat,
+    /// Output of a tool call. `trusted` is true only for harness-written text (skills, errors).
+    ToolResult { trusted: bool },
+    /// A summary of older messages; it may repeat tool output, so it is not trusted.
+    Summary,
+}
+
+#[derive(Clone, Debug)]
 pub struct Message {
     pub role: Role,
     pub content: String,
+    pub kind: Kind,
+}
+
+impl Message {
+    pub fn system(content: impl Into<String>) -> Self {
+        Message { role: Role::System, content: content.into(), kind: Kind::Chat }
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Message { role: Role::User, content: content.into(), kind: Kind::Chat }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Message { role: Role::Assistant, content: content.into(), kind: Kind::Chat }
+    }
+
+    pub fn tool_result(content: impl Into<String>, trusted: bool) -> Self {
+        Message { role: Role::User, content: content.into(), kind: Kind::ToolResult { trusted } }
+    }
+
+    pub fn summary(content: impl Into<String>) -> Self {
+        Message { role: Role::User, content: content.into(), kind: Kind::Summary }
+    }
+
+    /// Text from files or programs that could carry injected instructions.
+    pub fn is_untrusted(&self) -> bool {
+        matches!(self.kind, Kind::ToolResult { trusted: false } | Kind::Summary)
+    }
+
+    /// A message the user typed (not a tool result or summary).
+    pub fn is_user_chat(&self) -> bool {
+        self.role == Role::User && self.kind == Kind::Chat
+    }
 }
 
 /// Anything that can turn a conversation into the next assistant reply.
