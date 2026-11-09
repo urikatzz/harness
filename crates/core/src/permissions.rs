@@ -205,8 +205,16 @@ impl Policy {
         if self.yolo { Decision::Allow } else { Decision::Ask(ASK_MODE.into()) }
     }
 
+    /// Whether a tool may read `path` without asking: not denied and not behind an approval glob.
+    /// Listing and searching use it to leave protected files out instead of prompting per file.
+    pub fn readable_without_approval(&self, path: &str) -> bool {
+        self.check_path(path, Access::Read).is_none()
+    }
+
     /// File rules for one path; None means the path itself needs nothing special.
     fn check_path(&self, path: &str, access: Access) -> Option<Decision> {
+        // The project folder itself: fine to list or search; opening it as a file fails later.
+        if access == Access::Read && crate::paths::is_root(path) { return None; }
         let resolved = match crate::paths::resolve(&self.root, path) {
             Ok(path) => path,
             Err(reason) => return Some(Decision::Deny(reason)),
@@ -296,6 +304,21 @@ mod tests {
         std::fs::remove_file(dir.path().join("permissions.json")).unwrap();
         std::fs::create_dir(dir.path().join("permissions.json")).unwrap();
         assert!(Policy::load(dir.path(), None).is_err());
+    }
+
+    #[test]
+    fn protected_paths_are_not_readable_without_approval() {
+        let dir = crate::test_support::TestDir::new();
+        std::fs::write(dir.path().join("permissions.json"),
+            r#"{"mode":"yolo","files":{"deny":["secrets/**"],"approve":[".env"]}}"#).unwrap();
+        let p = Policy::load(dir.path(), None).unwrap();
+        assert!(p.readable_without_approval("src/main.rs"));
+        assert!(!p.readable_without_approval("secrets/key.txt"));
+        assert!(!p.readable_without_approval(".env"));
+        assert!(!p.readable_without_approval("../outside"));
+        // The project root is a valid place to list and search, but never to write.
+        assert!(p.readable_without_approval("."));
+        assert!(p.check_path(".", Access::Write).is_some());
     }
 
     #[test]

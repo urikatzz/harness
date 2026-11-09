@@ -1,6 +1,11 @@
 //! One path interpretation for authorization and execution.
 use std::path::{Component, Path, PathBuf};
 
+/// Whether `path` names the project folder itself (`.`, `./` or nothing).
+pub fn is_root(path: &str) -> bool {
+    Path::new(path).components().all(|c| c == Component::CurDir)
+}
+
 pub fn resolve(root: &Path, path: &str) -> Result<PathBuf, String> {
     let mut result = root.to_path_buf();
     let mut count = 0;
