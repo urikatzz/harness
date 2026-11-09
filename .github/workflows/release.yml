@@ -1,0 +1,31 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin,       os: macos-14 }
+          - { target: x86_64-apple-darwin,        os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu,  os: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked -p uritheking --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          name=uritheking-${{ matrix.target }}.tar.gz
+          tar -czf "$name" -C target/${{ matrix.target }}/release uritheking
+          shasum -a 256 "$name" > "$name.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: uritheking-*.tar.gz*

@@ -2,8 +2,25 @@
 
 The smallest model harness: send a prompt, print the reply, or open an interactive chat.
 
+## Install
+
+macOS or Linux:
+
 ```bash
-cargo install --path crates/cli   # installs `uritheking` into ~/.cargo/bin
+curl -fsSL https://raw.githubusercontent.com/urikatzz/harness/main/install.sh | sh
+```
+
+This downloads the latest release build, checks its SHA-256 checksum, and puts `uritheking` in
+`~/.local/bin`. Set `URITHEKING_INSTALL_DIR` to install somewhere else, or `URITHEKING_VERSION=v0.1.0`
+to pin a version. Run the same command again to update. To build from source instead:
+`cargo install --path crates/cli`.
+
+**Releasing:** push a tag like `v0.1.0`. `.github/workflows/release.yml` builds macOS and Linux
+binaries (Intel and ARM) and attaches them to the GitHub release the installer reads.
+
+## Use
+
+```bash
 uritheking                     # opens the chat (claude backend), type /help
 uritheking local -p "hello"
 uritheking openrouter anthropic/claude-sonnet-4.5   # chat, Ctrl-D to quit
