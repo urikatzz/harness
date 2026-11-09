@@ -15,6 +15,7 @@ mod custom;
 mod files;
 mod memory;
 mod skill;
+mod walk;
 
 pub use custom::CustomTool;
 pub use skill::Skill;
