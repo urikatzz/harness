@@ -12,8 +12,6 @@ use serde_json::{json, Map, Value};
 
 pub(crate) const OPEN: &str = "<tool_call>";
 pub(crate) const CLOSE: &str = "</tool_call>";
-/// Safety stop so a confused model can't loop forever.
-const MAX_STEPS: usize = 10;
 /// How many times the verify tool may fail in one turn before the turn stops.
 const MAX_VERIFY: usize = 3;
 /// Largest tool result that enters history; longer output is cut so one call can't fill the context window.
@@ -109,7 +107,8 @@ struct Turn<'a> {
 
 impl Turn<'_> {
     fn run(mut self) -> Result<String> {
-        for _ in 0..MAX_STEPS {
+        let max_steps = self.policy.max_steps();
+        for _ in 0..max_steps {
             let reply = self.ask_model()?;
             match parse_call(&reply) {
                 Ok(Some((name, args))) => self.call_tool(&name, &args),
@@ -118,7 +117,7 @@ impl Turn<'_> {
                 Err(e) => self.reject_bad_call(&e.to_string()),
             }
         }
-        Err(format!("stopped after {MAX_STEPS} tool steps without a final answer").into())
+        Err(format!("stopped after {max_steps} steps without a final answer; the work so far is kept, say \"continue\" to go on").into())
     }
 
     /// Summarizes old history if needed, then gets and records the model's next reply.
@@ -320,6 +319,20 @@ mod tests {
         // "a" then two-byte characters: byte 65536 falls inside one, so the cut moves back to 65535.
         let text = format!("a{}", "é".repeat(40_000));
         assert!(cap(&text).ends_with("é\n[output cut: 65535 of 80001 bytes shown]"));
+    }
+
+    #[test]
+    fn a_turn_stops_at_the_configured_step_limit_and_keeps_its_work() {
+        let dir = project(r#"{"mode":"yolo","max_steps":2}"#);
+        let (tb, policy) = (Toolbox::load(dir.path()), Policy::load(dir.path(), None).unwrap());
+        let call = r#"<tool_call>{"name":"read_file","args":{"path":"notes.txt"}}</tool_call>"#;
+        let provider = script(&[call, call, call]);
+        let mut history = vec![Message::user("read forever")];
+        let err = run_turn(&provider, &tb, &policy, &mut history, |_| {}, |_, _, _| true).unwrap_err().to_string();
+        assert_eq!(err, "stopped after 2 steps without a final answer; the work so far is kept, say \"continue\" to go on");
+        // The user message, then two calls with their results.
+        assert_eq!(history.len(), 5);
+        assert_eq!(history.iter().filter(|m| m.content.starts_with("<tool_result name=\"read_file\">")).count(), 2);
     }
 
     #[test]

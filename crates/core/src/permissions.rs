@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 pub const ASK_MODE: &str = "ask mode";
 /// The reason given in "changes" mode for a call that writes files or uses the network.
 pub const CHANGES_MODE: &str = "this call can change things";
+/// Model replies allowed in one turn when `max_steps` is not set.
+const DEFAULT_MAX_STEPS: usize = 50;
 
 /// Harness files a model-driven write must never change.
 const STATE_DIRS: &[&str] = &["sessions/**", "logs/**", "memory/**"];
@@ -92,6 +94,8 @@ struct PolicyFile {
     verify: Option<String>,
     #[serde(default)]
     trust_tool_output: bool,
+    /// Model replies allowed in one turn.
+    max_steps: Option<u64>,
     /// Roles that may write company memory.
     #[serde(default)]
     owners: Vec<String>,
@@ -116,6 +120,7 @@ pub struct Policy {
     pub verify: Option<String>,
     /// Skip the extra approval for side-effecting calls after tool output entered the chat.
     pub trust_tool_output: bool,
+    max_steps: Option<usize>,
     owners: Vec<String>,
 }
 
@@ -138,6 +143,9 @@ impl Policy {
         if file.verify.as_deref().is_some_and(str::is_empty) {
             return Err(Error::config("verify must be a tool name"));
         }
+        if file.max_steps == Some(0) {
+            return Err(Error::config("max_steps must be 1 or more"));
+        }
         let allowed = file.roles.as_ref().map(|roles| role.as_deref().and_then(|r| roles.get(r)).cloned().unwrap_or_default());
         Ok(Policy {
             root,
@@ -150,6 +158,7 @@ impl Policy {
             approve_files: file.files.approve,
             verify: file.verify,
             trust_tool_output: file.trust_tool_output,
+            max_steps: file.max_steps.map(|n| n as usize),
             owners: file.owners,
         })
     }
@@ -157,6 +166,11 @@ impl Policy {
     /// The same rules in ask mode, so every call goes through the approval callback.
     pub fn for_eval(&self) -> Self {
         Policy { mode: Mode::Ask, ..self.clone() }
+    }
+
+    /// Safety stop so a confused model can't loop forever: model replies allowed in one turn.
+    pub fn max_steps(&self) -> usize {
+        self.max_steps.unwrap_or(DEFAULT_MAX_STEPS)
     }
 
     /// No tools or skills at all; used when the rules file can't be read.
@@ -318,6 +332,18 @@ mod tests {
         assert!(matches!(check(&p, "read_file", json!({"path": "secrets/key.txt"})), Decision::Deny(_)));
         // Evals still see every call.
         assert_eq!(check(&p.for_eval(), "read_file", json!({"path": "a.txt"})), Decision::Ask(ASK_MODE.into()));
+    }
+
+    #[test]
+    fn max_steps_defaults_to_50_and_rejects_bad_values() {
+        assert_eq!(Policy::default().max_steps(), 50);
+        assert_eq!(policy_with("{}").1.max_steps(), 50);
+        assert_eq!(policy_with(r#"{"max_steps":2}"#).1.max_steps(), 2);
+        let dir = crate::test_support::TestDir::new();
+        for bad in [r#"{"max_steps":0}"#, r#"{"max_steps":-1}"#, r#"{"max_steps":1.5}"#, r#"{"max_steps":"many"}"#] {
+            std::fs::write(dir.path().join("permissions.json"), bad).unwrap();
+            assert!(Policy::load(dir.path(), None).is_err(), "{bad}");
+        }
     }
 
     #[test]
