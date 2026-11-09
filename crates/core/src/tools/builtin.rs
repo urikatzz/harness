@@ -1,6 +1,6 @@
 //! The list of tools built into the harness, and `load_skill`.
 
-use super::files::{ListFiles, ReadFile, WriteFile};
+use super::files::{ListFiles, ReadFile, SearchFiles, WriteFile};
 use super::{Context, Gate, Tool};
 use crate::error::Result;
 use serde_json::Value;
@@ -10,6 +10,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(LoadSkill),
         Box::new(ReadFile),
         Box::new(ListFiles),
+        Box::new(SearchFiles),
         Box::new(WriteFile),
         Box::new(super::memory::Remember),
         Box::new(super::memory::Forget),

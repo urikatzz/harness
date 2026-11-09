@@ -8,6 +8,10 @@ use std::io::Write;
 
 /// Most entries `list_files` returns.
 const MAX_LISTED: usize = 500;
+/// Most matching lines `search_files` returns.
+const MAX_MATCHES: usize = 200;
+/// Longest matching line shown, in characters.
+const MAX_MATCH_CHARS: usize = 300;
 
 const PATH_HELP: &str = "project-relative folder to look in (optional; default: the whole project)";
 const GLOB_HELP: &str = "only files whose project-relative path matches, e.g. **/*.rs (optional; * stays in one folder, ** crosses folders)";
@@ -72,6 +76,41 @@ impl Tool for ListFiles {
             out.push_str(&format!("\n[{} more not shown; pass path or glob to narrow]", files.len() - MAX_LISTED));
         }
         Ok(out)
+    }
+}
+
+pub struct SearchFiles;
+
+impl Tool for SearchFiles {
+    fn name(&self) -> &str { "search_files" }
+    fn description(&self) -> &str {
+        "Search project files for a regular expression, line by line. Git-ignored and protected files are left out."
+    }
+    fn params(&self) -> Vec<(&str, &str)> {
+        vec![("pattern", "regular expression to look for"), ("path", PATH_HELP), ("glob", GLOB_HELP)]
+    }
+    fn path_arg(&self) -> Option<(&'static str, Access)> { Some(("path", Access::Read)) }
+    fn run(&self, ctx: &Context, args: &Value) -> Result<String> {
+        // The pattern is checked first, so a bad one fails before any file is opened.
+        let pattern = regex::Regex::new(required_str(self.name(), args, "pattern")?).map_err(|e| format!("invalid pattern: {e}"))?;
+        let start = optional_str(self.name(), args, "path")?.unwrap_or(".");
+        let files = readable_files(ctx.root, start, optional_str(self.name(), args, "glob")?, ctx.policy)?;
+        let mut matches = Vec::new();
+        'files: for path in &files {
+            // Oversized, non-UTF-8 and unreadable files are skipped; the search goes on.
+            let Ok(content) = read_project_file(ctx.root, path) else { continue };
+            for (index, line) in content.lines().enumerate() {
+                if !pattern.is_match(line) { continue; }
+                if matches.len() == MAX_MATCHES {
+                    matches.push(format!("[more matches exist; showing the first {MAX_MATCHES}. Narrow the pattern, path or glob]"));
+                    break 'files;
+                }
+                let text: String = line.chars().take(MAX_MATCH_CHARS).collect();
+                matches.push(format!("{path}:{}: {text}", index + 1));
+            }
+        }
+        if matches.is_empty() { return Ok("no matches".into()); }
+        Ok(matches.join("\n"))
     }
 }
 
@@ -149,5 +188,48 @@ mod tests {
         assert!(call(&dir, "list_files", json!({"path": "missing"})).unwrap_err().to_string().contains("not a folder"));
         assert!(call(&dir, "list_files", json!({"path": "../x"})).is_err());
         assert!(call(&dir, "list_files", json!({"glob": 3})).unwrap_err().to_string().contains("\"glob\""));
+    }
+
+    #[test]
+    fn search_files_returns_path_line_and_text() {
+        let dir = project(&[("src/agent.rs", "use x;\nconst MAX_STEPS: usize = 10;\n"), ("notes.md", "MAX_STEPS is ten\n")]);
+        assert_eq!(call(&dir, "search_files", json!({"pattern": "MAX_STEPS", "glob": "**/*.rs"})).unwrap(),
+            "src/agent.rs:2: const MAX_STEPS: usize = 10;");
+        assert_eq!(call(&dir, "search_files", json!({"pattern": "^MAX_\\w+ is"})).unwrap(), "notes.md:1: MAX_STEPS is ten");
+        assert_eq!(call(&dir, "search_files", json!({"pattern": "MAX_STEPS", "path": "src"})).unwrap(),
+            "src/agent.rs:2: const MAX_STEPS: usize = 10;");
+        assert_eq!(call(&dir, "search_files", json!({"pattern": "nowhere"})).unwrap(), "no matches");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_files_never_reads_protected_or_linked_files() {
+        let outside = project(&[("secret.txt", "TOKEN outside")]);
+        let dir = project(&[("permissions.json", PROTECTED), (".env", "TOKEN=1"), ("secrets/key.txt", "TOKEN"), ("app.txt", "TOKEN here")]);
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), dir.path().join("link.txt")).unwrap();
+        assert_eq!(call(&dir, "search_files", json!({"pattern": "TOKEN"})).unwrap(), "app.txt:1: TOKEN here");
+    }
+
+    #[test]
+    fn search_files_limits_matches_and_line_length_and_skips_unreadable_files() {
+        let dir = project(&[("many.txt", &"hit\n".repeat(250)), ("wide.txt", &format!("wide {}\n", "x".repeat(400)))]);
+        std::fs::write(dir.path().join("binary.bin"), [0xff, 0xfe, b'h', b'i', b't']).unwrap();
+        std::fs::write(dir.path().join("huge.txt"), "hit\n".repeat(300_000)).unwrap();
+
+        let out = call(&dir, "search_files", json!({"pattern": "hit"})).unwrap();
+        assert_eq!(out.lines().count(), 201);
+        assert!(out.starts_with("many.txt:1: hit\n"), "binary and oversized files are skipped: {out}");
+        assert!(out.ends_with("many.txt:200: hit\n[more matches exist; showing the first 200. Narrow the pattern, path or glob]"), "{out}");
+
+        let wide = call(&dir, "search_files", json!({"pattern": "wide"})).unwrap();
+        assert_eq!(wide.len(), "wide.txt:1: ".len() + 300);
+    }
+
+    #[test]
+    fn search_files_rejects_bad_arguments_before_reading() {
+        let dir = project(&[("a.txt", "x")]);
+        assert!(call(&dir, "search_files", json!({"pattern": "("})).unwrap_err().to_string().starts_with("invalid pattern"));
+        assert!(call(&dir, "search_files", json!({})).unwrap_err().to_string().contains("\"pattern\""));
+        assert!(call(&dir, "search_files", json!({"pattern": "x", "path": "a.txt"})).unwrap_err().to_string().contains("not a folder"));
     }
 }
