@@ -150,7 +150,8 @@ With the company folder installed where users can't write, users can't change `p
 **Memory stays safe.** `remember` and `forget` fail without touching anything outside `memory/` when the name is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`) or the `memory/` folder is a symlink. `write_file` and `edit_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB.
 
 **Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
-- `"mode": "ask"` asks y/N before every tool call. `"yolo"` runs calls without asking.
+- `"mode": "ask"` asks y/N before every tool call. `"changes"` asks only before calls that can change things: `write_file`, `edit_file`, `remember`, `forget` and custom tools with `writes` or `network`. Reads, searches and read-only custom tools run without asking. `"yolo"` runs calls without asking.
+- `"max_steps"` is how many model replies one turn may take (default 50). At the limit the turn stops with an error; the work so far is kept, so you can say "continue".
 - `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
 - Built in, whatever the file says: `write_file` and `edit_file` can never touch `sessions/`, `logs/` or `memory/`, and writing `permissions.json`, `COMPANY.md`, `tools/` or `skills/` always needs a manual yes (they control what the model may do).
 - **Untrusted output.** File contents and tool output can contain instructions planted by someone else. The model is told to treat `<tool_result>` text as data, and tool output can't fake its own end tag or a tool call. Once any tool output is in the conversation, calls that can change things (`write_file`, `edit_file`, tools with `writes` or `network`) need a manual yes even in yolo. Set `"trust_tool_output": true` to turn that off.

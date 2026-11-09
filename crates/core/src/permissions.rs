@@ -1,7 +1,8 @@
 //! Guardrails from `permissions.json` in the harness home:
 //!
 //! {
-//!   "mode": "ask",                       // "ask": confirm every tool call · "yolo": run without asking
+//!   "mode": "ask",                       // "ask": confirm every tool call · "changes": confirm only calls
+//!                                        // that write files or use the network · "yolo": run without asking
 //!   "roles": {                           // which tools/skills each team may use ("*" = all)
 //!     "sales": { "tools": ["company_info"], "skills": [] },
 //!     "art":   { "tools": ["read_file"],    "skills": ["*"] }
@@ -11,7 +12,8 @@
 //!     "approve": [".env", "config/**"]         // always need a manual yes, even in yolo
 //!   },
 //!   "verify": "run_checks",               // tool run after file changes, before the answer
-//!   "trust_tool_output": false            // true: yolo stays yolo after reading tool output
+//!   "trust_tool_output": false,           // true: yolo stays yolo after reading tool output
+//!   "max_steps": 50                       // model replies allowed in one turn (default 50)
 //! }
 //!
 //! Built in, whatever the file says: `write_file` and `edit_file` may never touch `sessions/`, `logs/`
