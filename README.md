@@ -61,8 +61,8 @@ A Cargo workspace with two crates:
 
 Adding a backend = one struct implementing `Provider` in `crates/core/src/providers/`,
 plus one arm in `build_provider` and one in `catalog::models_for`.
-Adding a built-in tool = one struct implementing `Tool` in `crates/core/src/tools/builtin.rs`,
-listed in `builtin::all`.
+Adding a built-in tool = one struct implementing `Tool` in `crates/core/src/tools/` (file tools
+live in `files.rs`), listed in `builtin::all`.
 
 ## Behavior
 
@@ -92,7 +92,7 @@ The harness uses four folders, split by who owns the data (the same idea as Clau
 
 | Folder | Where | What's in it |
 |---|---|---|
-| project | the folder you start `uritheking` in | your code; the only place `read_file` / `write_file` work |
+| project | the folder you start `uritheking` in | your code; the only place the file tools work |
 | company | `/Library/Application Support/Uritheking` (macOS), `/etc/uritheking` (Linux), or `URITHEKING_COMPANY` | `COMPANY.md`, `tools/`, `skills/`, `permissions.json`, `evals/`. Installed by IT so users can't edit it. If it's missing, the project folder is used (fine for development, but not locked). |
 | data | `~/.uritheking/projects/<project path>/` (`URITHEKING_USER_DIR` replaces `~/.uritheking`) | this user's `sessions/`, `logs/audit.jsonl` and personal `memory/` for this project |
 | shared | `~/.uritheking/shared` or `URITHEKING_SHARED` | a clone of the company memory repo: `memory/teams/<role>/`, `memory/company/`. Start it from `shared-memory/` in this repo. |
@@ -117,7 +117,19 @@ Memory (`<name>.md` with frontmatter, plus a `MEMORY.md` index in every scope fo
 | company | `<shared>/memory/company/` | everyone | owners only, then commit and push |
 | `logs/audit.jsonl` | Written by the harness: every tool call, who made it and what was decided. |
 
-Built-in tools: `read_file`, `write_file`, `load_skill`, `remember`, `forget`.
+Built-in tools: `read_file`, `list_files`, `search_files`, `write_file`, `edit_file`, `load_skill`, `remember`, `forget`.
+
+**Find files.** `list_files` returns project-relative paths, sorted, one per line. `path` limits it to a folder and `glob` to matching paths (`*` stays in one folder, `**` crosses folders, so `**/*.rs` is every Rust file). Files ignored by `.gitignore`, the `.git/` folder and symlinks are never listed. Past 500 entries the result says how many were left out.
+
+**Search files.** `search_files` takes a regular expression in `pattern`, plus the same `path` and `glob`, and returns `path:line: text` for each matching line. It stops at 200 matches and says more exist; lines are cut to 300 characters. Files over 1 MiB or that aren't UTF-8 are skipped. An invalid pattern fails before any file is read.
+
+**Protected files stay hidden.** Files matching `files.deny` or `files.approve` never appear in `list_files` or `search_files` results and are not opened, so a search never stops to ask about `.env`. `read_file` on such a file still asks or is denied as before.
+
+**Edit part of a file.** `edit_file` replaces `old` with `new` in one file and answers `replaced N occurrence(s)`. If `old` is missing, or appears more than once without `replace_all: true`, the call fails, says how many times it was found, and the file is unchanged. It follows every rule `write_file` does.
+
+**Read long files in pages.** `read_file` returns 2,000 lines at a time. When lines remain, the result ends with `[lines 1-2000 of 5000; pass offset to read more]`; call it again with `offset: 2001`. `limit` changes the page size.
+
+**Large results are cut.** Any tool result over 64 KiB (built-in, custom or verify) is cut before the model sees it and ends with `[output cut: 65536 of 512000 bytes shown]`. The audit log still records the full size.
 
 **Remember a fact across sessions.** When a role allowed to use `remember` calls it with `name`, `description` and `content` and the user approves, `memory/<name>.md` is written and `memory/MEMORY.md` lists it as `- <name>: <description>`. The next session (or `/reload`) puts that index in the system prompt inside `<memory>`.
 
@@ -135,13 +147,13 @@ With the company folder installed where users can't write, users can't change `p
 
 **Replace or forget a memory.** Calling `remember` with an existing name (e.g. `db-choice`) overwrites it, and `forget` with `{"name": "db-choice"}` deletes it; either way the index is rebuilt. Forgetting an unknown name returns an error and changes nothing.
 
-**Memory stays safe.** `remember` and `forget` fail without touching anything outside `memory/` when the name is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`) or the `memory/` folder is a symlink. `write_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB.
+**Memory stays safe.** `remember` and `forget` fail without touching anything outside `memory/` when the name is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`) or the `memory/` folder is a symlink. `write_file` and `edit_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB.
 
 **Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
 - `"mode": "ask"` asks y/N before every tool call. `"yolo"` runs calls without asking.
 - `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
-- Built in, whatever the file says: `write_file` can never touch `sessions/`, `logs/` or `memory/`, and writing `permissions.json`, `COMPANY.md`, `tools/` or `skills/` always needs a manual yes (they control what the model may do).
-- **Untrusted output.** File contents and tool output can contain instructions planted by someone else. The model is told to treat `<tool_result>` text as data, and tool output can't fake its own end tag or a tool call. Once any tool output is in the conversation, calls that can change things (`write_file`, tools with `writes` or `network`) need a manual yes even in yolo. Set `"trust_tool_output": true` to turn that off.
+- Built in, whatever the file says: `write_file` and `edit_file` can never touch `sessions/`, `logs/` or `memory/`, and writing `permissions.json`, `COMPANY.md`, `tools/` or `skills/` always needs a manual yes (they control what the model may do).
+- **Untrusted output.** File contents and tool output can contain instructions planted by someone else. The model is told to treat `<tool_result>` text as data, and tool output can't fake its own end tag or a tool call. Once any tool output is in the conversation, calls that can change things (`write_file`, `edit_file`, tools with `writes` or `network`) need a manual yes even in yolo. Set `"trust_tool_output": true` to turn that off.
 - If roles are defined, a missing or unknown role gets no tools. Unreadable, malformed, or incorrectly typed permission files fail closed. Unknown keys in `permissions.json`, `tool.json` and eval cases are errors, so a typo like `"verfy"` is reported instead of ignored.
 - File tools normalize relative paths, reject traversal, symlinks and hard links, and open files through directory descriptors. Reads are limited to 1 MiB.
 - Custom commands run in a filesystem sandbox: they may read their tool directory, system runtimes and their `reads` folders, and read/write a private per-call temp folder (`$TMPDIR`, deleted afterwards) plus the folders listed in their `writes`. Everything else in or outside the project is off-limits, and so are `sessions/` and `logs/`. `writes` entries must be existing project folders below the top level, and never `tools/`, `skills/`, `sessions/` or `logs/`. Denied and approval-required paths stay unavailable to custom commands even inside `reads`/`writes`; use built-in file tools for those.

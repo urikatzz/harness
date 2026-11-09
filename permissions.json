@@ -5,7 +5,7 @@
     "owner": { "tools": ["*"], "skills": ["*"] },
     "dev":   { "tools": ["*"], "skills": ["*"] },
     "sales": { "tools": ["company_info"], "skills": [] },
-    "art":   { "tools": ["read_file", "write_file"], "skills": ["*"] }
+    "art":   { "tools": ["read_file", "write_file", "list_files", "search_files", "edit_file"], "skills": ["*"] }
   },
   "files": {
     "deny":    ["secrets/**", "**/*.pem", "**/*.key"],

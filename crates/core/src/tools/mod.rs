@@ -7,8 +7,9 @@
 //!
 //!   memory/                  — long-term memory (personal, team, company); see [`crate::memory`]
 //!
-//! Built-in tools (`read_file`, `write_file`, `load_skill`, `remember`, `forget`) and custom tools share one
-//! [`Tool`] trait, so permissions, prompts and the tool loop treat them the same way.
+//! Built-in tools (`read_file`, `list_files`, `search_files`, `write_file`, `edit_file`, `load_skill`,
+//! `remember`, `forget`) and custom tools share one [`Tool`] trait, so permissions, prompts and the
+//! tool loop treat them the same way.
 
 mod builtin;
 mod custom;

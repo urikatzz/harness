@@ -14,8 +14,9 @@
 //!   "trust_tool_output": false            // true: yolo stays yolo after reading tool output
 //! }
 //!
-//! Built in, whatever the file says: `write_file` may never touch `sessions/` or `logs/`, and
-//! writes to `permissions.json`, `COMPANY.md`, `tools/` and `skills/` always need a manual yes.
+//! Built in, whatever the file says: `write_file` and `edit_file` may never touch `sessions/`, `logs/`
+//! or `memory/`, and writes to `permissions.json`, `COMPANY.md`, `tools/` and `skills/` always need a
+//! manual yes. `list_files` and `search_files` leave out every file matching `deny` or `approve`.
 //!
 //! The role comes from `--role` / `URITHEKING_ROLE`. No file = everything allowed, mode "ask".
 //! With roles defined, an unknown or missing role gets no tools.

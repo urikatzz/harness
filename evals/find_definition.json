@@ -1,0 +1,9 @@
+{
+  "prompt": "Which file defines the constant MAX_STEPS? Answer with the file path.",
+  "role": "dev",
+  "expect": {
+    "tools": ["search_files"],
+    "no_tools": ["write_file", "edit_file"],
+    "reply_contains": ["agent.rs"]
+  }
+}
