@@ -12,6 +12,8 @@ const MAX_LISTED: usize = 500;
 const MAX_MATCHES: usize = 200;
 /// Longest matching line shown, in characters.
 const MAX_MATCH_CHARS: usize = 300;
+/// Lines `read_file` returns when no `limit` is given.
+const READ_LINES: usize = 2000;
 
 const PATH_HELP: &str = "project-relative folder to look in (optional; default: the whole project)";
 const GLOB_HELP: &str = "only files whose project-relative path matches, e.g. **/*.rs (optional; * stays in one folder, ** crosses folders)";
@@ -39,15 +41,41 @@ fn flag(tool: &str, args: &Value, key: &str) -> Result<bool> {
     }
 }
 
+/// An optional whole number of 1 or more.
+fn count(tool: &str, args: &Value, key: &str, default: usize) -> Result<usize> {
+    match &args[key] {
+        Value::Null => Ok(default),
+        value => value.as_u64().filter(|n| *n >= 1).map(|n| n as usize)
+            .ok_or_else(|| format!("{tool}: \"{key}\" must be a whole number, 1 or more").into()),
+    }
+}
+
 pub struct ReadFile;
 
 impl Tool for ReadFile {
     fn name(&self) -> &str { "read_file" }
-    fn description(&self) -> &str { "Read a project file." }
-    fn params(&self) -> Vec<(&str, &str)> { vec![("path", "project-relative file path")] }
+    fn description(&self) -> &str { "Read a project file, up to 2000 lines at a time." }
+    fn params(&self) -> Vec<(&str, &str)> {
+        vec![
+            ("path", "project-relative file path"),
+            ("offset", "first line to return, counting from 1 (optional; default 1)"),
+            ("limit", "how many lines to return (optional; default 2000)"),
+        ]
+    }
     fn path_arg(&self) -> Option<(&'static str, Access)> { Some(("path", Access::Read)) }
     fn run(&self, ctx: &Context, args: &Value) -> Result<String> {
-        read_project_file(ctx.root, required_str(self.name(), args, "path")?)
+        let name = self.name();
+        let path = required_str(name, args, "path")?;
+        let (offset, limit) = (count(name, args, "offset", 1)?, count(name, args, "limit", READ_LINES)?);
+        let content = read_project_file(ctx.root, path)?;
+        let total = content.lines().count();
+        // A file that fits is returned untouched, final newline included.
+        if offset == 1 && total <= limit { return Ok(content); }
+        if offset > total { return Err(format!("read_file: offset {offset} is past the end of `{path}` ({total} lines)").into()); }
+        let last = (offset - 1).saturating_add(limit).min(total);
+        let mut page = content.lines().skip(offset - 1).take(limit).collect::<Vec<_>>().join("\n");
+        if last < total { page.push_str(&format!("\n[lines {offset}-{last} of {total}; pass offset to read more]")); }
+        Ok(page)
     }
 }
 
@@ -276,6 +304,38 @@ mod tests {
         assert!(call(&dir, "search_files", json!({"pattern": "("})).unwrap_err().to_string().starts_with("invalid pattern"));
         assert!(call(&dir, "search_files", json!({})).unwrap_err().to_string().contains("\"pattern\""));
         assert!(call(&dir, "search_files", json!({"pattern": "x", "path": "a.txt"})).unwrap_err().to_string().contains("not a folder"));
+    }
+
+    #[test]
+    fn read_file_pages_through_long_files() {
+        let long: String = (1..=5000).map(|n| format!("line {n}\n")).collect();
+        let dir = project(&[("long.txt", &long), ("short.txt", "one\ntwo\n")]);
+
+        let first = call(&dir, "read_file", json!({"path": "long.txt"})).unwrap();
+        assert!(first.starts_with("line 1\nline 2\n"), "{}", &first[..40]);
+        assert!(first.ends_with("line 2000\n[lines 1-2000 of 5000; pass offset to read more]"));
+
+        let second = call(&dir, "read_file", json!({"path": "long.txt", "offset": 2001})).unwrap();
+        assert!(second.starts_with("line 2001\n"));
+        assert!(second.ends_with("line 4000\n[lines 2001-4000 of 5000; pass offset to read more]"));
+
+        let last = call(&dir, "read_file", json!({"path": "long.txt", "offset": 4001})).unwrap();
+        assert!(last.starts_with("line 4001\n") && last.ends_with("line 5000"), "no note once the end is reached");
+
+        assert_eq!(call(&dir, "read_file", json!({"path": "long.txt", "offset": 2, "limit": 2})).unwrap(),
+            "line 2\nline 3\n[lines 2-3 of 5000; pass offset to read more]");
+        // A file that fits comes back exactly as it is on disk.
+        assert_eq!(call(&dir, "read_file", json!({"path": "short.txt"})).unwrap(), "one\ntwo\n");
+
+        for (args, expected) in [
+            (json!({"path": "long.txt", "offset": 0}), "\"offset\""),
+            (json!({"path": "long.txt", "offset": "x"}), "\"offset\""),
+            (json!({"path": "long.txt", "limit": -1}), "\"limit\""),
+            (json!({"path": "long.txt", "offset": 5001}), "past the end"),
+        ] {
+            let error = call(&dir, "read_file", args).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     fn read(dir: &TestDir, path: &str) -> String { std::fs::read_to_string(dir.path().join(path)).unwrap() }
