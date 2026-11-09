@@ -12,6 +12,7 @@
 
 mod builtin;
 mod custom;
+mod files;
 mod memory;
 mod skill;
 
