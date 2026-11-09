@@ -11,8 +11,6 @@ description: Coding and documentation standards every dev change must follow
 - Follow the existing patterns in the codebase.
 - Minimize external calls and redundant reads/writes; handle errors and edge cases explicitly.
 - Add short comments only where intent isn't obvious.
-- Document significant behavior as scenarios in the README:
-  `#### Scenario: <title>` then **GIVEN** / **WHEN** / **THEN** / **AND** bullets.
 - Every change keeps `cargo test` green and adds tests for new behavior.
 
 Why: these come from the company AGENTS.md and keep the codebase consistent across people and agents.

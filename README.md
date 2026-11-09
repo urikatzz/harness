@@ -49,75 +49,25 @@ listed in `builtin::all`.
 
 ## Behavior
 
-#### Scenario: One-shot prompt
+**One-shot prompt.** `harness <provider> -p "text"` prints the reply to stdout and exits 0. On any failure the error goes to stderr and the exit code is 1.
 
-- **GIVEN** a configured provider
-- **WHEN** the user runs `harness <provider> -p "text"`
-- **THEN** the reply is printed to stdout and the process exits 0
-- **AND** on any failure the error goes to stderr and the exit code is 1
+**Chat keeps history.** In chat mode (no `-p`), every request includes all earlier user and assistant turns. A failed turn keeps its completed tool calls and results, records the interruption and saves the session, so a retry can account for changes already made.
 
-#### Scenario: Chat keeps history
+**CLI providers get flattened history.** The `claude` and `codex` providers receive multi-message history as a single `User:/Assistant:` transcript prompt.
 
-- **GIVEN** chat mode (no `-p`)
-- **WHEN** the user sends several lines
-- **THEN** every request includes all earlier user and assistant turns
-- **AND** failed turns retain completed tool calls and results, record the interruption, and save the session so retries can account for existing changes
+**Local model auto-detect.** With no model argument, the `local` provider uses the first non-embedding model from `<LOCAL_BASE_URL>/models`. It exits with an error if the server is down or lists no chat model.
 
-#### Scenario: CLI providers get flattened history
+**Server error.** When an HTTP provider answers with a non-2xx status, the status code and response body are shown (e.g. bad key, unknown model).
 
-- **GIVEN** the `claude` or `codex` provider
-- **WHEN** there is more than one message in history
-- **THEN** the history is sent as a single `User:/Assistant:` transcript prompt
+**Open uriTheKing.** Running `uritheking` with no arguments shows a crown banner and opens a chat on the `claude` backend. Each line typed is sent to the model with the full conversation.
 
-#### Scenario: Local model auto-detect
+**Slash commands and shell.** `/help`, `/model <backend> [model] [effort]`, `/clear`, `/exit` and `!<command>` run locally and are never sent to the model. An unknown `/command` prints a hint to use `/help`; a failed `/model` switch keeps the old backend.
 
-- **GIVEN** the `local` provider with no model argument
-- **WHEN** the harness starts
-- **THEN** it uses the first non-embedding model from `<LOCAL_BASE_URL>/models`
-- **AND** it exits with an error if the server is down or lists no chat model
+**Pick a model and effort.** `/model` alone opens arrow-key menus for backend, then model, then effort (`default` first). Models come from a built-in list (claude), `~/.codex/models_cache.json` (codex), `<LOCAL_BASE_URL>/models` (local) or OpenRouter's public list. The effort menu lists only that model's levels and is skipped when it has none. Esc keeps the current choice, and a switch keeps the conversation.
 
-#### Scenario: Server error
+**Effort reaches the backend.** A chosen effort (picker or `--effort`) is passed as `--effort <level>` to claude, `-c model_reasoning_effort="<level>"` to codex, `"reasoning": {"effort": ...}` to openrouter and `"reasoning_effort": ...` to local.
 
-- **GIVEN** an HTTP provider
-- **WHEN** the server answers with a non-2xx status
-- **THEN** the status code and response body are shown (e.g. bad key, unknown model)
-
-#### Scenario: Open uriTheKing
-
-- **GIVEN** `uritheking` is installed
-- **WHEN** the user runs `uritheking` with no arguments
-- **THEN** a crown banner is shown and a chat opens on the `claude` backend
-- **AND** each line typed is sent to the model with the full conversation
-
-#### Scenario: Slash commands and shell
-
-- **GIVEN** an open uriTheKing chat
-- **WHEN** the user types `/help`, `/model <backend> [model] [effort]`, `/clear`, `/exit` or `!<command>`
-- **THEN** the command runs locally and is never sent to the model
-- **AND** an unknown `/command` prints a hint to use `/help`; a failed `/model` switch keeps the old backend
-
-#### Scenario: Pick a model and effort
-
-- **GIVEN** an open uriTheKing chat
-- **WHEN** the user types `/model` alone
-- **THEN** arrow-key menus ask for backend, then model, then effort (`default` first)
-- **AND** models come from a built-in list (claude), `~/.codex/models_cache.json` (codex), `<LOCAL_BASE_URL>/models` (local) or OpenRouter's public list
-- **AND** the effort menu lists only that model's levels and is skipped when it has none
-- **AND** Esc keeps the current choice; a switch keeps the conversation
-
-#### Scenario: Effort reaches the backend
-
-- **GIVEN** an effort level is chosen (picker or `--effort`)
-- **THEN** claude gets `--effort <level>`, codex gets `-c model_reasoning_effort="<level>"`
-- **AND** openrouter gets `"reasoning": {"effort": ...}`, local gets `"reasoning_effort": ...`
-
-#### Scenario: Startup crown animation
-
-- **GIVEN** `uritheking` is opened in a real terminal (no `-p`)
-- **WHEN** it starts
-- **THEN** an ASCII crown hops in from the right three times, squashes on landing and sparkles (~2s)
-- **AND** the animation is erased and the normal banner prints in its place
-- **AND** it is skipped when output is piped or `URITHEKING_NO_INTRO` is set
+**Startup crown animation.** In a real terminal (no `-p`), an ASCII crown hops in from the right three times, squashes on landing and sparkles (~2s), then is erased and the normal banner prints in its place. It is skipped when output is piped or `URITHEKING_NO_INTRO` is set.
 
 ## Company tools, skills and permissions
 
@@ -152,58 +102,23 @@ Memory (`<name>.md` with frontmatter, plus a `MEMORY.md` index in every scope fo
 
 Built-in tools: `read_file`, `write_file`, `load_skill`, `remember`, `forget`.
 
-#### Scenario: Remember a fact across sessions
+**Remember a fact across sessions.** When a role allowed to use `remember` calls it with `name`, `description` and `content` and the user approves, `memory/<name>.md` is written and `memory/MEMORY.md` lists it as `- <name>: <description>`. The next session (or `/reload`) puts that index in the system prompt inside `<memory>`.
 
-- **GIVEN** a role allowed to use `remember`
-- **WHEN** the model calls `remember` with `name`, `description` and `content` and the user approves
-- **THEN** `memory/<name>.md` is written and `memory/MEMORY.md` lists it as `- <name>: <description>`
-- **AND** the next session (or `/reload`) puts that index in the system prompt inside `<memory>`
+**Save a team memory.** When a `sales` user asks to remember something for the team, `remember` with `scope: "team"` writes to `<shared>/memory/teams/sales/` and the result says to commit and push it. After they pull, every `sales` user sees it inside `<memory scope="team sales">`; other roles don't.
 
-#### Scenario: Save a team memory
-- **GIVEN** a user with role `sales`
-- **WHEN** they ask to remember something for the team and the model calls `remember` with `scope: "team"`
-- **THEN** it is written to `<shared>/memory/teams/sales/` and the result says to commit and push it
-- **AND** after they pull, every `sales` user sees it inside `<memory scope="team sales">`, and other roles don't
+**Only owners write company memory.** With `"owners": ["owner"]` in `permissions.json`, a user whose role isn't listed gets "only owners can change company memory" from `remember` or `forget` with `scope: "company"`, and nothing is written. The owner's calls go to `<shared>/memory/company/`, which every role sees inside `<memory scope="company">`.
 
-#### Scenario: Only owners write company memory
-- **GIVEN** `permissions.json` has `"owners": ["owner"]`
-- **WHEN** a user whose role isn't listed calls `remember` or `forget` with `scope: "company"`
-- **THEN** the call fails with "only owners can change company memory" and nothing is written
-- **AND** the owner's calls are written to `<shared>/memory/company/`, which every role sees inside `<memory scope="company">`
+**No memory repo cloned yet.** With nothing at `~/.uritheking/shared` and no `URITHEKING_SHARED`, saving a team or company memory fails and says where to clone the company memory repo. Personal memory still works.
 
-#### Scenario: No memory repo cloned yet
-- **GIVEN** nothing at `~/.uritheking/shared` and no `URITHEKING_SHARED`
-- **WHEN** the model saves a team or company memory
-- **THEN** the call fails and says where to clone the company memory repo
-- **AND** personal memory still works
+**Sessions and memory follow the user, not the repo.** Working in `/work/app`, sessions and personal memory go to `~/.uritheking/projects/-work-app/`, never into `/work/app`. Another project starts with its own sessions and memory.
 
-#### Scenario: Sessions and memory follow the user, not the repo
-- **GIVEN** a user working in `/work/app`
-- **WHEN** they chat and save a personal memory
-- **THEN** the session and memory go to `~/.uritheking/projects/-work-app/`, never into `/work/app`
-- **AND** opening another project starts with that project's own sessions and memory
-
-#### Scenario: Sessions don't fill memory on their own
-- **GIVEN** any session
-- **WHEN** the conversation ends
-- **THEN** nothing is saved to memory unless `remember` was called and approved
-- **AND** the default scope is `personal`; the model uses `team` or `company` only when the user asks to share
+**Sessions don't fill memory on their own.** Nothing is saved to memory unless `remember` was called and approved. The default scope is `personal`; the model uses `team` or `company` only when the user asks to share.
 
 With the company folder installed where users can't write, users can't change `permissions.json` to get around the owner check. Git protects the shared memory repo too: `shared-memory/CODEOWNERS` lists who must approve each folder (turn on branch protection with "Require review from Code Owners").
 
-#### Scenario: Replace or forget a memory
+**Replace or forget a memory.** Calling `remember` with an existing name (e.g. `db-choice`) overwrites it, and `forget` with `{"name": "db-choice"}` deletes it; either way the index is rebuilt. Forgetting an unknown name returns an error and changes nothing.
 
-- **GIVEN** a saved memory `db-choice`
-- **WHEN** the model calls `remember` with the same name, or `forget` with `{"name": "db-choice"}`
-- **THEN** the file is overwritten or deleted and the index is rebuilt
-- **AND** forgetting an unknown name returns an error and changes nothing
-
-#### Scenario: Memory stays safe
-
-- **GIVEN** a name that is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`), or a symlinked `memory/` folder
-- **WHEN** `remember` or `forget` runs
-- **THEN** the call fails and nothing outside `memory/` is touched
-- **AND** `write_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB
+**Memory stays safe.** `remember` and `forget` fail without touching anything outside `memory/` when the name is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`) or the `memory/` folder is a symlink. `write_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB.
 
 **Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
 - `"mode": "ask"` asks y/N before every tool call. `"yolo"` runs calls without asking.
