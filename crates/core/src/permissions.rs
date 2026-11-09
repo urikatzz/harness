@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 
 /// The reason given for a call that only needs a yes because the mode is "ask".
 pub const ASK_MODE: &str = "ask mode";
+/// The reason given in "changes" mode for a call that writes files or uses the network.
+pub const CHANGES_MODE: &str = "this call can change things";
 
 /// Harness files a model-driven write must never change.
 const STATE_DIRS: &[&str] = &["sessions/**", "logs/**", "memory/**"];
@@ -54,11 +56,16 @@ pub struct Allowed {
     pub skills: Vec<String>,
 }
 
-#[derive(Default, Deserialize, PartialEq)]
+/// When a call that passed every other rule needs a human yes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum Mode {
+pub enum Mode {
+    /// Before every call.
     #[default]
     Ask,
+    /// Only before calls that write files or use the network.
+    Changes,
+    /// Never.
     Yolo,
 }
 
@@ -95,7 +102,7 @@ fn yes() -> bool { true }
 #[derive(Default, Clone)]
 pub struct Policy {
     root: PathBuf,
-    pub yolo: bool,
+    pub mode: Mode,
     /// `"sandbox": false`: run custom tools and CLI backends without the OS sandbox.
     pub unsandboxed: bool,
     pub role: Option<String>,
@@ -134,7 +141,7 @@ impl Policy {
         let allowed = file.roles.as_ref().map(|roles| role.as_deref().and_then(|r| roles.get(r)).cloned().unwrap_or_default());
         Ok(Policy {
             root,
-            yolo: file.mode == Mode::Yolo,
+            mode: file.mode,
             unsandboxed: !file.sandbox,
             role,
             roles: file.roles,
@@ -149,7 +156,7 @@ impl Policy {
 
     /// The same rules in ask mode, so every call goes through the approval callback.
     pub fn for_eval(&self) -> Self {
-        Policy { yolo: false, ..self.clone() }
+        Policy { mode: Mode::Ask, ..self.clone() }
     }
 
     /// No tools or skills at all; used when the rules file can't be read.
@@ -203,7 +210,11 @@ impl Policy {
                 if let Some(decision) = self.check_path(path, access) { return decision; }
             }
         }
-        if self.yolo { Decision::Allow } else { Decision::Ask(ASK_MODE.into()) }
+        match (self.mode, tool.effects().any()) {
+            (Mode::Yolo, _) | (Mode::Changes, false) => Decision::Allow,
+            (Mode::Changes, true) => Decision::Ask(CHANGES_MODE.into()),
+            (Mode::Ask, _) => Decision::Ask(ASK_MODE.into()),
+        }
     }
 
     /// Whether a tool may read `path` without asking: not denied and not behind an approval glob.
@@ -271,6 +282,57 @@ mod tests {
         fn run(&self, _: &Context, _: &Value) -> Result<String> { Ok(String::new()) }
     }
 
+    /// A custom tool that reaches the network.
+    struct Networked;
+    impl Tool for Networked {
+        fn name(&self) -> &str { "fetch" }
+        fn description(&self) -> &str { "" }
+        fn params(&self) -> Vec<(&str, &str)> { vec![] }
+        fn effects(&self) -> crate::tools::Effects { crate::tools::Effects { writes_files: false, network: true } }
+        fn run(&self, _: &Context, _: &Value) -> Result<String> { Ok(String::new()) }
+    }
+
+    fn policy_with(permissions: &str) -> (crate::test_support::TestDir, Policy) {
+        let dir = crate::test_support::TestDir::new();
+        std::fs::write(dir.path().join("permissions.json"), permissions).unwrap();
+        let policy = Policy::load(dir.path(), None).unwrap();
+        (dir, policy)
+    }
+
+    #[test]
+    fn changes_mode_asks_only_for_calls_that_can_change_things() {
+        let (_dir, p) = policy_with(r#"{"mode":"changes","files":{"deny":["secrets/**"],"approve":[".env"]}}"#);
+        let ask = || Decision::Ask(CHANGES_MODE.into());
+        assert_eq!(check(&p, "read_file", json!({"path": "a.txt"})), Decision::Allow);
+        assert_eq!(check(&p, "list_files", json!({})), Decision::Allow);
+        assert_eq!(check(&p, "search_files", json!({"pattern": "x"})), Decision::Allow);
+        // A custom tool that declares no writes and no network.
+        assert_eq!(check(&p, "company_info", json!({})), Decision::Allow);
+        for tool in ["write_file", "edit_file"] {
+            assert_eq!(check(&p, tool, json!({"path": "a.txt"})), ask(), "{tool}");
+        }
+        assert_eq!(check(&p, "remember", json!({})), ask());
+        assert_eq!(p.check(&Networked, &json!({})), ask());
+        // File rules win over the mode.
+        assert!(matches!(check(&p, "read_file", json!({"path": ".env"})), Decision::Ask(why) if why != CHANGES_MODE));
+        assert!(matches!(check(&p, "read_file", json!({"path": "secrets/key.txt"})), Decision::Deny(_)));
+        // Evals still see every call.
+        assert_eq!(check(&p.for_eval(), "read_file", json!({"path": "a.txt"})), Decision::Ask(ASK_MODE.into()));
+    }
+
+    #[test]
+    fn ask_and_yolo_modes_are_unchanged() {
+        for permissions in [r#"{"mode":"ask"}"#, "{}"] {
+            let (_dir, p) = policy_with(permissions);
+            assert_eq!(check(&p, "read_file", json!({"path": "a.txt"})), Decision::Ask(ASK_MODE.into()));
+            assert_eq!(check(&p, "write_file", json!({"path": "a.txt"})), Decision::Ask(ASK_MODE.into()));
+        }
+        let (_dir, p) = policy_with(r#"{"mode":"yolo"}"#);
+        assert_eq!(check(&p, "read_file", json!({"path": "a.txt"})), Decision::Allow);
+        assert_eq!(check(&p, "write_file", json!({"path": "a.txt"})), Decision::Allow);
+        assert_eq!(p.check(&Networked, &json!({})), Decision::Allow);
+    }
+
     #[test]
     fn only_owner_roles_may_write_company_memory() {
         use crate::memory::Scope;
@@ -335,7 +397,7 @@ mod tests {
     fn roles_and_files() {
         let p = Policy {
             root: std::env::current_dir().unwrap(),
-            yolo: true,
+            mode: Mode::Yolo,
             unsandboxed: false,
             role: Some("sales".into()),
             allowed: Some(Allowed { tools: vec!["read_file".into()], skills: vec![] }),
@@ -364,7 +426,7 @@ mod tests {
 
     #[test]
     fn harness_files_are_guarded_even_in_yolo() {
-        let p = Policy { root: std::env::current_dir().unwrap(), yolo: true, ..Default::default() };
+        let p = Policy { root: std::env::current_dir().unwrap(), mode: Mode::Yolo, ..Default::default() };
         for path in ["sessions/1.json", "logs/audit.jsonl"] {
             assert!(matches!(check(&p, "write_file", json!({"path": path})), Decision::Deny(_)), "{path}");
             assert_eq!(check(&p, "read_file", json!({"path": path})), Decision::Allow);

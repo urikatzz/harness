@@ -284,7 +284,12 @@ impl Repl {
     fn print_permissions(&self) {
         let p = &self.policy;
         println!("  {BOLD}role{RESET}  {}", p.role.as_deref().unwrap_or("none (set --role or URITHEKING_ROLE)"));
-        println!("  {BOLD}mode{RESET}  {}", if p.yolo { "yolo — tools run without asking" } else { "ask — confirm each tool call" });
+        let mode = match p.mode {
+            uritheking_core::permissions::Mode::Ask => "ask — confirm each tool call",
+            uritheking_core::permissions::Mode::Changes => "changes — confirm calls that change files or use the network",
+            uritheking_core::permissions::Mode::Yolo => "yolo — tools run without asking",
+        };
+        println!("  {BOLD}mode{RESET}  {mode}");
         let available: Vec<&str> = self.toolbox.available(p).map(|t| t.name()).collect();
         for t in self.toolbox.tools() {
             let ok = available.contains(&t.name());
