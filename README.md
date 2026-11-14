@@ -1,4 +1,4 @@
-# uriTheKing 👑
+# umango 👑
 
 The smallest model harness: send a prompt, print the reply, or open an interactive chat.
 
@@ -10,8 +10,8 @@ macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/urikatzz/harness/main/install.sh | sh
 ```
 
-This downloads the latest release build, checks its SHA-256 checksum, and puts `uritheking` in
-`~/.local/bin`. Set `URITHEKING_INSTALL_DIR` to install somewhere else, or `URITHEKING_VERSION=v0.1.0`
+This downloads the latest release build, checks its SHA-256 checksum, and puts `umango` in
+`~/.local/bin`. Set `UMANGO_INSTALL_DIR` to install somewhere else, or `UMANGO_VERSION=v0.1.0`
 to pin a version. Run the same command again to update. To build from source instead:
 `cargo install --path crates/cli`.
 
@@ -21,11 +21,11 @@ binaries (Intel and ARM) and attaches them to the GitHub release the installer r
 ## Use
 
 ```bash
-uritheking                     # opens the chat (claude backend), type /help
-uritheking local -p "hello"
-uritheking openrouter anthropic/claude-sonnet-4.5   # chat, Ctrl-D to quit
-uritheking claude -p "hello"
-uritheking codex gpt-5 -p "hello"
+umango                     # opens the chat (claude backend), type /help
+umango local -p "hello"
+umango openrouter anthropic/claude-sonnet-4.5   # chat, Ctrl-D to quit
+umango claude -p "hello"
+umango codex gpt-5 -p "hello"
 ```
 
 | Provider     | How it talks                         | Auth                      |
@@ -39,7 +39,7 @@ uritheking codex gpt-5 -p "hello"
 
 A Cargo workspace with two crates:
 
-- `crates/core` (`uritheking-core`, library) – talks to models; no terminal code.
+- `crates/core` (`umango-core`, library) – talks to models; no terminal code.
   - `provider.rs` – `Provider` trait, `Message` (with its `Kind`: chat, tool result, summary), `Selection`.
   - `providers/mod.rs` – `build_provider`: picks the backend.
   - `providers/openai.rs` – any OpenAI-compatible server (openrouter, local).
@@ -53,7 +53,7 @@ A Cargo workspace with two crates:
   - `process.rs` – subprocesses with time and output limits.
   - `session.rs`, `context.rs`, `audit.rs`, `eval.rs` – saved chats, summarizing, audit log, evals.
   - `error.rs` – the library's `Error` type.
-- `crates/cli` (`uritheking`, binary) – the terminal app.
+- `crates/cli` (`umango`, binary) – the terminal app.
   - `main.rs` – argument parsing.
   - `repl.rs` – chat session: banner, slash commands, `!` shell.
   - `picker.rs` – arrow-key menus for `/model`.
@@ -66,7 +66,7 @@ live in `files.rs`), listed in `builtin::all`.
 
 ## Behavior
 
-**One-shot prompt.** `harness <provider> -p "text"` prints the reply to stdout and exits 0. On any failure the error goes to stderr and the exit code is 1.
+**One-shot prompt.** `umango <provider> -p "text"` prints the reply to stdout and exits 0. On any failure the error goes to stderr and the exit code is 1.
 
 **Chat keeps history.** In chat mode (no `-p`), every request includes all earlier user and assistant turns. A failed turn keeps its completed tool calls and results, records the interruption and saves the session, so a retry can account for changes already made.
 
@@ -83,7 +83,7 @@ live in `files.rs`), listed in `builtin::all`.
 
 **Server error.** When an HTTP provider answers with a non-2xx status, the status code and response body are shown (e.g. bad key, unknown model).
 
-**Open uriTheKing.** Running `uritheking` with no arguments shows a crown banner and opens a chat on the `claude` backend. Each line typed is sent to the model with the full conversation.
+**Open umango.** Running `umango` with no arguments shows a crown banner and opens a chat on the `claude` backend. Each line typed is sent to the model with the full conversation.
 
 **Slash commands and shell.** `/help`, `/model <backend> [model] [effort]`, `/clear`, `/exit` and `!<command>` run locally and are never sent to the model. An unknown `/command` prints a hint to use `/help`; a failed `/model` switch keeps the old backend.
 
@@ -91,7 +91,7 @@ live in `files.rs`), listed in `builtin::all`.
 
 **Effort reaches the backend.** A chosen effort (picker or `--effort`) is passed as `--effort <level>` to claude, `-c model_reasoning_effort="<level>"` to codex, `"reasoning": {"effort": ...}` to openrouter and `"reasoning_effort": ...` to local.
 
-**Startup crown animation.** In a real terminal (no `-p`), an ASCII crown hops in from the right three times, squashes on landing and sparkles (~2s), then is erased and the normal banner prints in its place. It is skipped when output is piped or `URITHEKING_NO_INTRO` is set.
+**Startup crown animation.** In a real terminal (no `-p`), an ASCII crown hops in from the right three times, squashes on landing and sparkles (~2s), then is erased and the normal banner prints in its place. It is skipped when output is piped or `UMANGO_NO_INTRO` is set.
 
 ## Company tools, skills and permissions
 
@@ -99,10 +99,10 @@ The harness uses four folders, split by who owns the data (the same idea as Clau
 
 | Folder | Where | What's in it |
 |---|---|---|
-| project | the folder you start `uritheking` in | your code; the only place the file tools work |
-| company | `/Library/Application Support/Uritheking` (macOS), `/etc/uritheking` (Linux), or `URITHEKING_COMPANY` | `COMPANY.md`, `tools/`, `skills/`, `permissions.json`, `evals/`. Installed by IT so users can't edit it. If it's missing, the project folder is used (fine for development, but not locked). |
-| data | `~/.uritheking/projects/<project path>/` (`URITHEKING_USER_DIR` replaces `~/.uritheking`) | this user's `sessions/`, `logs/audit.jsonl` and personal `memory/` for this project |
-| shared | `~/.uritheking/shared` or `URITHEKING_SHARED` | a clone of the company memory repo: `memory/teams/<role>/`, `memory/company/`. Start it from `shared-memory/` in this repo. |
+| project | the folder you start `umango` in | your code; the only place the file tools work |
+| company | `/Library/Application Support/Umango` (macOS), `/etc/umango` (Linux), or `UMANGO_COMPANY` | `COMPANY.md`, `tools/`, `skills/`, `permissions.json`, `evals/`. Installed by IT so users can't edit it. If it's missing, the project folder is used (fine for development, but not locked). |
+| data | `~/.umango/projects/<project path>/` (`UMANGO_USER_DIR` replaces `~/.umango`) | this user's `sessions/`, `logs/audit.jsonl` and personal `memory/` for this project |
+| shared | `~/.umango/shared` or `UMANGO_SHARED` | a clone of the company memory repo: `memory/teams/<role>/`, `memory/company/`. Start it from `shared-memory/` in this repo. |
 
 Files in the company folder:
 
@@ -112,7 +112,7 @@ Files in the company folder:
 | `tools/<name>/tool.json` | A company tool: `name`, `description`, `params`, `command`, and optional `reads` (project folders it may read, `"."` = whole project), `writes` (project folders it may write to), `network` (`true` to allow outbound network) and `env` (names of environment variables to pass through). The command runs in the tool's folder with arguments as JSON on stdin and as `ARG_<NAME>` env vars. Whatever it prints is the result. Any language works. |
 | `skills/<name>/SKILL.md` | A playbook (frontmatter: `name`, `description`). The model loads it when it fits the task. |
 | `permissions.json` | Which tools and skills each role gets, file rules, the approval mode, and the optional `verify` tool. |
-| `evals/<name>.json` | Eval cases: a prompt and what should happen. Run with `uritheking eval`. |
+| `evals/<name>.json` | Eval cases: a prompt and what should happen. Run with `umango eval`. |
 | `owners` in `permissions.json` | Roles that may change company memory. |
 
 Memory (`<name>.md` with frontmatter, plus a `MEMORY.md` index in every scope folder; safe to edit by hand, then `/reload`):
@@ -144,9 +144,9 @@ Built-in tools: `read_file`, `list_files`, `search_files`, `write_file`, `edit_f
 
 **Only owners write company memory.** With `"owners": ["owner"]` in `permissions.json`, a user whose role isn't listed gets "only owners can change company memory" from `remember` or `forget` with `scope: "company"`, and nothing is written. The owner's calls go to `<shared>/memory/company/`, which every role sees inside `<memory scope="company">`.
 
-**No memory repo cloned yet.** With nothing at `~/.uritheking/shared` and no `URITHEKING_SHARED`, saving a team or company memory fails and says where to clone the company memory repo. Personal memory still works.
+**No memory repo cloned yet.** With nothing at `~/.umango/shared` and no `UMANGO_SHARED`, saving a team or company memory fails and says where to clone the company memory repo. Personal memory still works.
 
-**Sessions and memory follow the user, not the repo.** Working in `/work/app`, sessions and personal memory go to `~/.uritheking/projects/-work-app/`, never into `/work/app`. Another project starts with its own sessions and memory.
+**Sessions and memory follow the user, not the repo.** Working in `/work/app`, sessions and personal memory go to `~/.umango/projects/-work-app/`, never into `/work/app`. Another project starts with its own sessions and memory.
 
 **Sessions don't fill memory on their own.** Nothing is saved to memory unless `remember` was called and approved. The default scope is `personal`; the model uses `team` or `company` only when the user asks to share.
 
@@ -156,7 +156,7 @@ With the company folder installed where users can't write, users can't change `p
 
 **Memory stays safe.** `remember` and `forget` fail without touching anything outside `memory/` when the name is not 1-64 characters of `a-z`, `0-9`, `-` (e.g. `../permissions`) or the `memory/` folder is a symlink. `write_file` and `edit_file` can never write `memory/`, both tools count as writes (manual yes after untrusted tool output), and the index is capped at 8 KiB.
 
-**Permissions.** Choose a role with `--role sales` or `URITHEKING_ROLE=sales`:
+**Permissions.** Choose a role with `--role sales` or `UMANGO_ROLE=sales`:
 - `"mode": "ask"` asks y/N before every tool call. `"changes"` asks only before calls that can change things: `write_file`, `edit_file`, `remember`, `forget` and custom tools with `writes` or `network`. Reads, searches and read-only custom tools run without asking. `"yolo"` runs calls without asking.
 - `"max_steps"` is how many model replies one turn may take (default 50). At the limit the turn stops with an error; the work so far is kept, so you can say "continue".
 - `files.deny` globs are never touched, even with approval. `files.approve` globs always need a manual yes, even in yolo. Paths outside the project are always denied.
@@ -176,7 +176,7 @@ In the chat: `/tools`, `/skills`, `/permissions`, `/reload` (re-reads everything
 **Try the mock skill and tool.** Start with an authorized role:
 
 ```bash
-uritheking codex --role dev
+umango codex --role dev
 # Type: Run the mock demo with the message hello.
 ```
 
@@ -184,21 +184,21 @@ The `mock-demo` skill calls `mock_echo`, which prints `Mock echo: hello` without
 files or the network. In ask mode, approve the tool call when prompted. Use `/reload` in an
 existing chat to discover newly added extensions.
 
-When roles are configured, launching without `--role` or `URITHEKING_ROLE` grants no tools.
+When roles are configured, launching without `--role` or `UMANGO_ROLE` grants no tools.
 The harness warns when file tools are unavailable, and tells the model to explain the limitation
 instead of promising changes. To create extensions through chat, use a role with `write_file`
 access (such as `dev` in the example configuration); each configuration write still requires approval.
 
 The tool loop runs only explicit `<tool_call>` replies. A plain-text reply ends the turn, so
 "I'll add it" does not mean files were changed. CLI backends can confuse these text-based
-tools with their native tools; run `uritheking eval codex <model> --effort <level>` to check
+tools with their native tools; run `umango eval codex <model> --effort <level>` to check
 the selected model. Failed evals show the missing calls and the model's reply.
 
 **Audit log.** Every tool call adds a `decision` line to `logs/audit.jsonl` (time, role, tool, arguments with long strings cut to 200 characters, and `allowed`/`approved`/`declined`/`denied`/`invalid` with the reason) before anything runs, and a `result` line after. If the log can't be written, the call is refused.
 
 **Verify.** Set `"verify": "<tool name>"` in `permissions.json` to run that tool after the model changes files and before its answer is accepted. If it fails, its output goes back to the model to fix; after 3 failures in one turn, the turn stops with an error. The verify tool is set by whoever owns `permissions.json`, so it runs for every role. Give it `reads` so it can see the project.
 
-**Evals.** `uritheking eval [backend] [model] [--role name]` runs every `evals/<name>.json`:
+**Evals.** `umango eval [backend] [model] [--role name]` runs every `evals/<name>.json`:
 
 ```json
 {

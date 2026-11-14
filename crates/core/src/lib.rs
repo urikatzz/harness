@@ -1,4 +1,4 @@
-//! uriTheKing core: talks to model backends. Knows nothing about terminals.
+//! umango core: talks to model backends. Knows nothing about terminals.
 
 pub mod agent;
 pub mod audit;

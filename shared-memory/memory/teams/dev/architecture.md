@@ -1,6 +1,6 @@
 ---
 name: architecture
-description: How uriTheKing is built: crates, layers and where new code goes
+description: How umango is built: crates, layers and where new code goes
 ---
 
 Cargo workspace, two crates:
@@ -14,7 +14,7 @@ Key pieces in core:
 - `permissions.rs`: `permissions.json` roles, file rules and per-call decisions.
 - `sandbox/`: OS sandbox for tools and CLI backends (macOS sandbox-exec, Linux bubblewrap).
 - `layout.rs`: four folders: project (file tools), company (locked config), data
-  (`~/.uritheking/projects/<project>/`: sessions, logs, personal memory), shared (memory repo).
+  (`~/.umango/projects/<project>/`: sessions, logs, personal memory), shared (memory repo).
 
 Where new code goes:
 - New backend: a struct implementing `Provider`, plus one arm in `build_provider` and `catalog::models_for`.

@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::provider::{Kind, Message, Provider, Role};
 
-/// Rough token budget before old messages get summarized (`URITHEKING_CONTEXT_TOKENS`).
+/// Rough token budget before old messages get summarized (`UMANGO_CONTEXT_TOKENS`).
 const DEFAULT_BUDGET: usize = 60_000;
 /// Recent messages that are always kept word for word.
 const KEEP_RECENT: usize = 6;
@@ -14,7 +14,7 @@ pub fn estimate_tokens(history: &[Message]) -> usize {
 }
 
 pub fn budget() -> usize {
-    std::env::var("URITHEKING_CONTEXT_TOKENS").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_BUDGET)
+    std::env::var("UMANGO_CONTEXT_TOKENS").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_BUDGET)
 }
 
 /// Summarizes if history is over budget. Returns true if it compacted.

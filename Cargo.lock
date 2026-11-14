@@ -738,6 +738,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "umango"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "inquire",
+ "serde_json",
+ "umango-core",
+]
+
+[[package]]
+name = "umango-core"
+version = "0.1.0"
+dependencies = [
+ "ignore",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -777,28 +799,6 @@ dependencies = [
  "serde_json",
  "url",
  "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "uritheking"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "inquire",
- "serde_json",
- "uritheking-core",
-]
-
-[[package]]
-name = "uritheking-core"
-version = "0.1.0"
-dependencies = [
- "ignore",
- "libc",
- "regex",
- "serde",
- "serde_json",
- "ureq",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [package]
-name = "uritheking-core"
-description = "Model backends and model catalog for uriTheKing. No terminal UI."
+name = "umango-core"
+description = "Model backends and model catalog for umango. No terminal UI."
 version.workspace = true
 edition.workspace = true
 

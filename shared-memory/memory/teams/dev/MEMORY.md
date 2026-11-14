@@ -1,2 +1,2 @@
-- architecture: How uriTheKing is built: crates, layers and where new code goes
+- architecture: How umango is built: crates, layers and where new code goes
 - standards: Coding and documentation standards every dev change must follow

@@ -12,7 +12,7 @@ const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
 
 /// Set this env var to any value to skip the intro.
-const SKIP_ENV: &str = "URITHEKING_NO_INTRO";
+const SKIP_ENV: &str = "UMANGO_NO_INTRO";
 
 const CROWN: [&str; 4] = [
     r"   _.+._   ",

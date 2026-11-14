@@ -1,11 +1,11 @@
 [package]
-name = "uritheking"
-description = "uriTheKing terminal chat."
+name = "umango"
+description = "umango terminal chat."
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-uritheking-core.workspace = true
+umango-core.workspace = true
 inquire.workspace = true
 crossterm.workspace = true
 serde_json.workspace = true

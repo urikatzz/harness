@@ -5,12 +5,12 @@ use crate::permissions::Policy;
 use crate::provider::Message;
 use crate::tools::Toolbox;
 
-const IDENTITY: &str = "You are uriTheKing, the company's assistant.\n";
+const IDENTITY: &str = "You are umango, the company's assistant.\n";
 
 const NO_TOOLS: &str = "No tools or skills are available for the current role. You cannot read or change project files. \
 Explain this limitation when asked to perform actions; do not promise to perform them. \
 The user can inspect /permissions and restart with --role <authorized-role> \
-or set URITHEKING_ROLE to a role configured in permissions.json.\n";
+or set UMANGO_ROLE to a role configured in permissions.json.\n";
 
 const EXECUTE: &str = "You have company tools and skills.\n\
 Execute requested actions using tools before your final answer; do not stop at a promise or plan. \

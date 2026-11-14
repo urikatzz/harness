@@ -142,7 +142,7 @@ impl MemoryStore {
         }
         if !layout.shared.is_dir() {
             return Err(format!(
-                "no shared memory repo at {}; clone the company memory repo there (or set URITHEKING_SHARED)",
+                "no shared memory repo at {}; clone the company memory repo there (or set UMANGO_SHARED)",
                 layout.shared.display()
             ).into());
         }

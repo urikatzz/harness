@@ -20,7 +20,7 @@
 //! or `memory/`, and writes to `permissions.json`, `COMPANY.md`, `tools/` and `skills/` always need a
 //! manual yes. `list_files` and `search_files` leave out every file matching `deny` or `approve`.
 //!
-//! The role comes from `--role` / `URITHEKING_ROLE`. No file = everything allowed, mode "ask".
+//! The role comes from `--role` / `UMANGO_ROLE`. No file = everything allowed, mode "ask".
 //! With roles defined, an unknown or missing role gets no tools.
 
 use crate::error::{Error, Result};

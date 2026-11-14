@@ -2,13 +2,13 @@
 //!
 //!   project  — the folder the harness runs in; the only place file tools work
 //!   company  — `permissions.json`, `COMPANY.md`, `tools/`, `skills/`, `evals/`. Installed by IT in a
-//!              folder users can't write (`/Library/Application Support/Uritheking` on macOS,
-//!              `/etc/uritheking` on Linux) or set with `URITHEKING_COMPANY`. Missing: the project
+//!              folder users can't write (`/Library/Application Support/Umango` on macOS,
+//!              `/etc/umango` on Linux) or set with `UMANGO_COMPANY`. Missing: the project
 //!              folder is used instead, which is fine for development but not locked.
 //!   data     — this user's sessions, audit log and personal memory for this project:
-//!              `~/.uritheking/projects/<project path>/` (`URITHEKING_USER_DIR` replaces `~/.uritheking`)
+//!              `~/.umango/projects/<project path>/` (`UMANGO_USER_DIR` replaces `~/.umango`)
 //!   shared   — a clone of the company's memory repo (team and company memory):
-//!              `~/.uritheking/shared` or `URITHEKING_SHARED`
+//!              `~/.umango/shared` or `UMANGO_SHARED`
 
 use std::path::{Path, PathBuf};
 
@@ -23,9 +23,9 @@ pub struct Layout {
 /// Where IT installs the company folder.
 fn managed_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
-        Some(PathBuf::from("/Library/Application Support/Uritheking"))
+        Some(PathBuf::from("/Library/Application Support/Umango"))
     } else if cfg!(target_os = "linux") {
-        Some(PathBuf::from("/etc/uritheking"))
+        Some(PathBuf::from("/etc/umango"))
     } else {
         None
     }
@@ -51,16 +51,16 @@ impl Layout {
     pub fn discover(project: &Path) -> Self {
         let env = |key: &str| std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from);
         let project = canonical(project.to_path_buf());
-        let company = env("URITHEKING_COMPANY")
+        let company = env("UMANGO_COMPANY")
             .or_else(|| managed_dir().filter(|d| d.is_dir()))
             .map(canonical)
             .unwrap_or_else(|| project.clone());
-        let Some(user) = env("URITHEKING_USER_DIR").or_else(|| env("HOME").map(|h| h.join(".uritheking"))) else {
+        let Some(user) = env("UMANGO_USER_DIR").or_else(|| env("HOME").map(|h| h.join(".umango"))) else {
             return Layout { company, ..Layout::single(&project) };
         };
         Layout {
             data: user.join("projects").join(project_key(&project)),
-            shared: env("URITHEKING_SHARED").unwrap_or_else(|| user.join("shared")),
+            shared: env("UMANGO_SHARED").unwrap_or_else(|| user.join("shared")),
             company,
             project,
         }

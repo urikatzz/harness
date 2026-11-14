@@ -5,17 +5,17 @@ mod repl;
 mod spinner;
 
 use repl::Repl;
-use uritheking_core::{agent, build_provider, layout, prompt, Message, Policy, Selection, Toolbox};
+use umango_core::{agent, build_provider, layout, prompt, Message, Policy, Selection, Toolbox};
 
 /// The app reports any error as text, so one boxed type is enough here.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const DEFAULT_BACKEND: &str = "claude";
 
-const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [--effort level] [--role name] [-c] [-p prompt]
-       uritheking eval [backend] [model] [--effort level] [--role name]
+const USAGE: &str = "usage: umango [openrouter|local|claude|codex] [model] [--effort level] [--role name] [-c] [-p prompt]
+       umango eval [backend] [model] [--effort level] [--role name]
 
-  no arguments  opens the uriTheKing chat with the claude backend (type /help inside)
+  no arguments  opens the umango chat with the claude backend (type /help inside)
 
   openrouter  needs OPENROUTER_API_KEY            (default model: openrouter/auto)
   local       OpenAI-compatible server, LOCAL_BASE_URL (default http://localhost:1234/v1)
@@ -24,7 +24,7 @@ const USAGE: &str = "usage: uritheking [openrouter|local|claude|codex] [model] [
   codex       runs `codex exec`, uses your Codex login
 
   --effort    reasoning effort, e.g. low | medium | high (levels depend on the model)
-  --role      your team, e.g. sales | art (or URITHEKING_ROLE); decides which tools you get
+  --role      your team, e.g. sales | art (or UMANGO_ROLE); decides which tools you get
               (rules live in permissions.json)
   -c, --continue  reopen the most recent saved session
   -p prompt   ask once and exit; otherwise opens the chat
@@ -38,7 +38,7 @@ fn run() -> Result<()> {
     let mut prompt = None;
     let mut effort = None;
     let mut resume = false;
-    let mut role = std::env::var("URITHEKING_ROLE").ok();
+    let mut role = std::env::var("UMANGO_ROLE").ok();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-p" => prompt = Some(args.next().ok_or("-p needs a prompt")?),
@@ -98,7 +98,7 @@ fn run() -> Result<()> {
 }
 
 fn run_evals(selection: &Selection, role: Option<String>) -> Result<()> {
-    use uritheking_core::eval;
+    use umango_core::eval;
     let layout = layout();
     let tb = Toolbox::open(layout.clone());
     let (cases, errors) = eval::load(&layout.company);

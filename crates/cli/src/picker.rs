@@ -1,8 +1,8 @@
 //! Arrow-key menus for choosing backend → model → effort.
 
-use uritheking_core::catalog::{self, ModelOption};
+use umango_core::catalog::{self, ModelOption};
 use crate::Result;
-use uritheking_core::Selection;
+use umango_core::Selection;
 use inquire::{InquireError, Select};
 
 const DEFAULT_LABEL: &str = "default";

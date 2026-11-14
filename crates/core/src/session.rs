@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn save_and_load_round_trip() {
-        let home = std::env::temp_dir().join(format!("uritheking-test-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("umango-test-{}", std::process::id()));
         let s = Session::open(&home, "42");
         let history = vec![
             Message::system("sys"),

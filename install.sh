@@ -1,14 +1,14 @@
 #!/bin/sh
-# Installs uriTheKing:  curl -fsSL https://raw.githubusercontent.com/urikatzz/harness/main/install.sh | sh
-# Options (env): URITHEKING_VERSION=v0.1.0 (default: latest), URITHEKING_INSTALL_DIR=~/.local/bin
+# Installs umango:  curl -fsSL https://raw.githubusercontent.com/urikatzz/harness/main/install.sh | sh
+# Options (env): UMANGO_VERSION=v0.1.0 (default: latest), UMANGO_INSTALL_DIR=~/.local/bin
 set -eu
 
 REPO="urikatzz/harness"
-BIN="uritheking"
-INSTALL_DIR="${URITHEKING_INSTALL_DIR:-$HOME/.local/bin}"
-VERSION="${URITHEKING_VERSION:-latest}"
+BIN="umango"
+INSTALL_DIR="${UMANGO_INSTALL_DIR:-$HOME/.local/bin}"
+VERSION="${UMANGO_VERSION:-latest}"
 
-fail() { echo "uritheking install: $*" >&2; exit 1; }
+fail() { echo "umango install: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "'$1' is required"; }
 need curl; need tar; need uname
 

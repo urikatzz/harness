@@ -22,7 +22,7 @@ impl Scratch {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-        let base = std::env::temp_dir().join(format!("uritheking-tool-{}-{nanos}-{n}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("umango-tool-{}-{nanos}-{n}", std::process::id()));
         std::fs::create_dir(&base)?;
         let base = base.canonicalize()?;
         let tmp = base.join("tmp");
@@ -261,17 +261,17 @@ mod tests {
         let dir = root.path().join("tools/example");
         std::fs::create_dir_all(&dir).unwrap();
         let policy = Policy::load(root.path(), None).unwrap();
-        std::env::set_var("URITHEKING_TEST_SECRET", "hunter2");
-        std::env::set_var("URITHEKING_TEST_TOKEN", "passed");
+        std::env::set_var("UMANGO_TEST_SECRET", "hunter2");
+        std::env::set_var("UMANGO_TEST_TOKEN", "passed");
         let none: [PathBuf; 0] = [];
-        let env = ["URITHEKING_TEST_TOKEN".to_string()];
+        let env = ["UMANGO_TEST_TOKEN".to_string()];
         let out = run_in("/usr/bin/env", &[], &access(&dir, &none, &none, false, &env), &policy);
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("hunter2"), "{text}");
-        assert!(text.contains("URITHEKING_TEST_TOKEN=passed"), "{text}");
+        assert!(text.contains("UMANGO_TEST_TOKEN=passed"), "{text}");
         for line in text.lines() {
             let key = line.split('=').next().unwrap();
-            assert!(PASSED_ENV.contains(&key) || ["TMPDIR", "PWD", "URITHEKING_TEST_TOKEN"].contains(&key), "leaked {key}");
+            assert!(PASSED_ENV.contains(&key) || ["TMPDIR", "PWD", "UMANGO_TEST_TOKEN"].contains(&key), "leaked {key}");
         }
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

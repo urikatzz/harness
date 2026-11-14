@@ -1,14 +1,14 @@
-//! Interactive uriTheKing session: banner, chat loop, slash commands and `!` shell.
+//! Interactive umango session: banner, chat loop, slash commands and `!` shell.
 
 use crate::picker;
 use crate::spinner::Spinner;
 use crate::input::{resolve, LineEditor, Read};
 use crate::Result;
 use std::process::Command as Shell;
-use uritheking_core::agent::{self, Event};
-use uritheking_core::session::{self, Session};
-use uritheking_core::{catalog, context, prompt};
-use uritheking_core::{Layout, Message, Policy, Provider, Selection, Toolbox};
+use umango_core::agent::{self, Event};
+use umango_core::session::{self, Session};
+use umango_core::{catalog, context, prompt};
+use umango_core::{Layout, Message, Policy, Provider, Selection, Toolbox};
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
@@ -17,7 +17,7 @@ const RED: &str = "\x1b[31m";
 const RESET: &str = "\x1b[0m";
 
 /// Builds a provider from a backend name and optional model (injected so the REPL stays backend-agnostic).
-pub type ProviderFactory = fn(&Selection) -> uritheking_core::Result<Box<dyn Provider>>;
+pub type ProviderFactory = fn(&Selection) -> umango_core::Result<Box<dyn Provider>>;
 
 /// What one line of user input asks for.
 enum Input<'a> {
@@ -80,7 +80,7 @@ impl Repl {
     /// `resume_latest` reopens the newest saved session (`--continue`).
     pub fn new(factory: ProviderFactory, selection: Selection, role: Option<String>, resume_latest: bool) -> Result<Self> {
         let provider = factory(&selection)?;
-        let layout = uritheking_core::layout().clone();
+        let layout = umango_core::layout().clone();
         let session = Session::new(&layout.data);
         let mut repl = Self { factory, provider, selection, history: Vec::new(), toolbox: Toolbox::default(), policy: Policy::default(), role, layout, session };
         repl.reload();
@@ -183,7 +183,7 @@ impl Repl {
 
     pub fn run(&mut self) -> Result<()> {
         // Save the current tab title, show ours, and put the old one back on exit.
-        print!("\x1b[22;0t\x1b]0;👑 uriTheKing\x07");
+        print!("\x1b[22;0t\x1b]0;👑 umango\x07");
         let result = self.run_loop();
         print!("\x1b[23;0t");
         let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -283,11 +283,11 @@ impl Repl {
 
     fn print_permissions(&self) {
         let p = &self.policy;
-        println!("  {BOLD}role{RESET}  {}", p.role.as_deref().unwrap_or("none (set --role or URITHEKING_ROLE)"));
+        println!("  {BOLD}role{RESET}  {}", p.role.as_deref().unwrap_or("none (set --role or UMANGO_ROLE)"));
         let mode = match p.mode {
-            uritheking_core::permissions::Mode::Ask => "ask — confirm each tool call",
-            uritheking_core::permissions::Mode::Changes => "changes — confirm calls that change files or use the network",
-            uritheking_core::permissions::Mode::Yolo => "yolo — tools run without asking",
+            umango_core::permissions::Mode::Ask => "ask — confirm each tool call",
+            umango_core::permissions::Mode::Changes => "changes — confirm calls that change files or use the network",
+            umango_core::permissions::Mode::Yolo => "yolo — tools run without asking",
         };
         println!("  {BOLD}mode{RESET}  {mode}");
         let available: Vec<&str> = self.toolbox.available(p).map(|t| t.name()).collect();
@@ -351,12 +351,12 @@ impl Repl {
 
     fn print_banner(&self) {
         println!();
-        println!("  {GOLD}👑{RESET}  {BOLD}uriTheKing{RESET} {DIM}v{}{RESET}", env!("CARGO_PKG_VERSION"));
+        println!("  {GOLD}👑{RESET}  {BOLD}umango{RESET} {DIM}v{}{RESET}", env!("CARGO_PKG_VERSION"));
         println!(
             "      {DIM}/ commands ·{RESET} ! {DIM}bash ·{RESET} ctrl+d {DIM}exit{RESET}"
         );
         println!("      {}", self.label());
-        println!("  {DIM}Type /help to see what uriTheKing can do.{RESET}");
+        println!("  {DIM}Type /help to see what umango can do.{RESET}");
         self.warn_if_unloaded();
         println!();
     }
@@ -372,7 +372,7 @@ impl Repl {
     fn print_help(&self) {
         println!(
             "\
-{GOLD}{BOLD}What uriTheKing can do{RESET}
+{GOLD}{BOLD}What umango can do{RESET}
 
   {BOLD}just type{RESET}                   chat with the model (it remembers the conversation,
                               also across /model switches)
@@ -386,7 +386,7 @@ impl Repl {
   {BOLD}/clear{RESET}                      forget the conversation and start a new session
   {BOLD}/resume [id]{RESET}                pick a saved session (every chat autosaves to sessions/)
   {BOLD}/compact{RESET}                    summarize older messages to free up context
-                              (happens on its own past ~URITHEKING_CONTEXT_TOKENS, default 60000)
+                              (happens on its own past ~UMANGO_CONTEXT_TOKENS, default 60000)
   {BOLD}!<command>{RESET}                  run a shell command, e.g. !ls
   {BOLD}/exit{RESET} or ctrl+d             quit
 
@@ -449,7 +449,7 @@ mod tests {
 
     struct FailsAfterWrite(Cell<usize>);
     impl Provider for FailsAfterWrite {
-        fn complete(&self, _: &[Message]) -> uritheking_core::Result<String> {
+        fn complete(&self, _: &[Message]) -> umango_core::Result<String> {
             let call = self.0.get();
             self.0.set(call + 1);
             if call == 0 {
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn failed_turn_retains_completed_tool_results_in_saved_session() {
         let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let home = std::env::temp_dir().join(format!("uritheking-recovery-{}-{id}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("umango-recovery-{}-{id}", std::process::id()));
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("permissions.json"), r#"{"mode":"yolo"}"#).unwrap();
         let mut repl = Repl {

@@ -14,7 +14,7 @@ const RESET: &str = "\x1b[0m";
 
 /// Slash commands shown in the menu: (name, description).
 pub const COMMANDS: &[(&str, &str)] = &[
-    ("help", "Show what uriTheKing can do"),
+    ("help", "Show what umango can do"),
     ("model", "Pick backend, model and effort"),
     ("tools", "List company tools"),
     ("skills", "List skills"),
@@ -24,7 +24,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("compact", "Summarize older messages to free context"),
     ("clear", "Forget the conversation and start fresh"),
     ("new", "Same as /clear"),
-    ("exit", "Quit uriTheKing"),
+    ("exit", "Quit umango"),
     ("quit", "Same as /exit"),
 ];
 
