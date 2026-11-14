@@ -237,6 +237,7 @@ impl Repl {
             spinner = None;
             match ev {
                 Event::Thinking => spinner = Some(Spinner::start("thinking")),
+                Event::Retry { wait, error, .. } => println!("{DIM}  ↻ {}{RESET}", retry_notice(wait, error)),
                 Event::Reasoning { text } => print_reasoning(text),
                 Event::ToolCall { name, args } => println!("{DIM}⚙ {name} {args}{RESET}"),
                 Event::ToolResult { output, ok, .. } => {
@@ -428,6 +429,16 @@ fn run_shell(cmd: &str) {
     }
 }
 
+/// One line for a model retry, e.g. `retrying in 2s (HTTP 429: rate limited)`.
+/// Server error bodies can be long JSON, so only the start of the first line is shown.
+pub fn retry_notice(wait: std::time::Duration, error: &str) -> String {
+    const MAX_CHARS: usize = 120;
+    let first = error.lines().next().unwrap_or("");
+    let cut: String = first.chars().take(MAX_CHARS).collect();
+    let more = if cut.len() < error.len() { " …" } else { "" };
+    format!("retrying in {:.0}s ({cut}{more})", wait.as_secs_f64())
+}
+
 /// Asks the user y/N before a tool call runs. Anything but y/yes is a no.
 pub fn ask_approval(name: &str, args: &serde_json::Value, why: &str) -> bool {
     use std::io::{BufRead, IsTerminal, Write};
@@ -456,6 +467,14 @@ mod tests {
                 Ok(r#"<tool_call>{"name":"write_file","args":{"path":"result.txt","content":"done"}}</tool_call>"#.into())
             } else { Err("inference unavailable".into()) }
         }
+    }
+
+    #[test]
+    fn retry_notice_shows_the_wait_and_the_start_of_the_error() {
+        let wait = std::time::Duration::from_millis(2100);
+        assert_eq!(retry_notice(wait, "HTTP 429: rate limited"), "retrying in 2s (HTTP 429: rate limited)");
+        let long = format!("HTTP 503: {}\nsecond line", "x".repeat(300));
+        assert_eq!(retry_notice(wait, &long), format!("retrying in 2s (HTTP 503: {} …)", "x".repeat(110)));
     }
 
     #[test]

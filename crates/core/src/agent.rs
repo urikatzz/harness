@@ -3,12 +3,15 @@
 
 use crate::audit;
 use crate::context;
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::interrupt;
 use crate::permissions::{Decision, Policy};
 use crate::prompt::call_format;
 use crate::provider::{Message, Provider, Reply};
+use crate::retry::Backoff;
 use crate::tools::{Tool, Toolbox};
 use serde_json::{json, Map, Value};
+use std::time::Duration;
 
 pub(crate) const OPEN: &str = "<tool_call>";
 pub(crate) const CLOSE: &str = "</tool_call>";
@@ -24,6 +27,8 @@ pub const UNTRUSTED: &str = "this call can change things and comes after tool ou
 pub enum Event<'a> {
     /// A model request was sent; the next event (or the end of the turn) means it answered.
     Thinking,
+    /// Request number `attempt` failed with a transient error; the next one goes out after `wait`.
+    Retry { attempt: u32, wait: Duration, error: &'a str },
     /// The model's reasoning for the reply that just arrived (thinking models only).
     Reasoning { text: &'a str },
     ToolCall { name: &'a str, args: &'a Value },
@@ -89,8 +94,42 @@ pub fn run_turn(
     // Asked when a call needs a human yes: (tool, args, reason) -> approved?
     mut approve: impl FnMut(&str, &Value, &str) -> bool,
 ) -> Result<String> {
-    let turn = Turn { provider, tb, policy, history, on_event: &mut on_event, approve: &mut approve, changed: false, verify_failures: 0 };
-    turn.run()
+    run_turn_with(provider, tb, policy, history, &mut on_event, &mut approve, Waits::REAL)
+}
+
+fn run_turn_with(
+    provider: &dyn Provider,
+    tb: &Toolbox,
+    policy: &Policy,
+    history: &mut Vec<Message>,
+    on_event: &mut dyn FnMut(Event),
+    approve: &mut dyn FnMut(&str, &Value, &str) -> bool,
+    waits: Waits,
+) -> Result<String> {
+    Turn { provider, tb, policy, history, on_event, approve, waits, changed: false, verify_failures: 0 }.run()
+}
+
+/// How the retry loop waits between attempts; injected so tests don't sleep.
+struct Waits {
+    /// Waits for the given time; `Err` (e.g. `Cancelled`) ends the turn.
+    sleep: fn(Duration) -> Result<()>,
+    /// A fraction in `[0, 1)` that spreads retries out.
+    jitter: fn() -> f64,
+}
+
+impl Waits {
+    const REAL: Waits = Waits { sleep: sleep_unless_cancelled, jitter: clock_jitter };
+}
+
+/// Sleeps off-thread so Ctrl-C ends the wait with `Error::Cancelled`.
+fn sleep_unless_cancelled(wait: Duration) -> Result<()> {
+    interrupt::cancellable(move || std::thread::sleep(wait))
+}
+
+/// Enough randomness for jitter without a dependency: the clock's sub-second part.
+fn clock_jitter() -> f64 {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    f64::from(nanos) / 1e9
 }
 
 struct Turn<'a> {
@@ -100,6 +139,7 @@ struct Turn<'a> {
     history: &'a mut Vec<Message>,
     on_event: &'a mut dyn FnMut(Event),
     approve: &'a mut dyn FnMut(&str, &Value, &str) -> bool,
+    waits: Waits,
     /// Files changed since the last verify run.
     changed: bool,
     verify_failures: usize,
@@ -128,13 +168,34 @@ impl Turn<'_> {
             Ok(false) => {}
             Err(e) => (self.on_event)(Event::CompactFailed { error: e.to_string() }),
         }
-        (self.on_event)(Event::Thinking);
-        let Reply { text, reasoning, .. } = self.provider.complete_with_reasoning(self.history)?;
+        let (reply, _attempts) = self.request();
+        let Reply { text, reasoning, .. } = reply?;
         if let Some(text) = &reasoning {
             (self.on_event)(Event::Reasoning { text });
         }
         self.history.push(Message::assistant(text.clone()));
         Ok(text)
+    }
+
+    /// Sends the history to the model, retrying transient failures with backoff.
+    /// Returns the reply or the last error, and how many requests were sent.
+    fn request(&mut self) -> (Result<Reply>, u32) {
+        let mut backoff = Backoff::new(self.waits.jitter);
+        let mut attempts = 0;
+        loop {
+            (self.on_event)(Event::Thinking);
+            attempts += 1;
+            let error = match self.provider.complete_with_reasoning(self.history) {
+                Ok(reply) => return (Ok(reply), attempts),
+                Err(e) => e,
+            };
+            let retry_after = match &error { Error::Http { retry_after, .. } => *retry_after, _ => None };
+            let Some(wait) = error.is_transient().then(|| backoff.next(retry_after)).flatten() else {
+                return (Err(error), attempts);
+            };
+            (self.on_event)(Event::Retry { attempt: attempts, wait, error: &error.to_string() });
+            if let Err(e) = (self.waits.sleep)(wait) { return (Err(e), attempts); }
+        }
     }
 
     /// Whether a plain answer ends the turn. After file changes the verify tool must pass first;
@@ -436,6 +497,60 @@ mod tests {
         let mut history = vec![Message::user("make it")];
         let err = run_turn(&provider, &tb, &policy, &mut history, |_| {}, |_, _, _| true).unwrap_err();
         assert!(err.to_string().contains("verification still failing"), "{err}");
+    }
+
+    use crate::test_support::{http_error, reply, Scripted};
+
+    /// Runs a turn without real waits, collecting the retry events.
+    fn run_without_waiting(provider: &Scripted, tb: &Toolbox, policy: &Policy, history: &mut Vec<Message>) -> (Result<String>, Vec<(u32, std::time::Duration, String)>) {
+        let mut retries = vec![];
+        let waits = Waits { sleep: |_| Ok(()), jitter: || 0.0 };
+        let result = run_turn_with(provider, tb, policy, history, &mut |ev| {
+            if let Event::Retry { attempt, wait, error } = ev { retries.push((attempt, wait, error.to_string())) }
+        }, &mut |_, _, _| true, waits);
+        (result, retries)
+    }
+
+    #[test]
+    fn a_transient_error_is_retried_and_the_turn_goes_on() {
+        let provider = Scripted::new([http_error(Some(429), "HTTP 429: rate limited"), reply("hello")]);
+        let mut history = vec![Message::user("hi")];
+        let (result, retries) = run_without_waiting(&provider, &Toolbox::default(), &Policy::default(), &mut history);
+        assert_eq!(result.unwrap(), "hello");
+        assert_eq!(retries, vec![(1, std::time::Duration::from_secs(1), "HTTP 429: rate limited".to_string())]);
+        assert_eq!(provider.requests.get(), 2);
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn a_permanent_error_fails_after_one_attempt() {
+        let provider = Scripted::new([http_error(Some(401), "HTTP 401: bad key"), reply("unused")]);
+        let (result, retries) = run_without_waiting(&provider, &Toolbox::default(), &Policy::default(), &mut vec![Message::user("hi")]);
+        assert_eq!(result.unwrap_err().to_string(), "HTTP 401: bad key");
+        assert!(retries.is_empty());
+        assert_eq!(provider.requests.get(), 1);
+    }
+
+    #[test]
+    fn retries_run_out_with_the_last_error() {
+        let provider = Scripted::new([
+            http_error(None, "connection refused"), http_error(Some(503), "HTTP 503: a"),
+            http_error(Some(502), "HTTP 502: b"), http_error(Some(500), "HTTP 500: last"), reply("unused"),
+        ]);
+        let (result, retries) = run_without_waiting(&provider, &Toolbox::default(), &Policy::default(), &mut vec![Message::user("hi")]);
+        assert_eq!(result.unwrap_err().to_string(), "HTTP 500: last");
+        let waits: Vec<u64> = retries.iter().map(|r| r.1.as_secs()).collect();
+        assert_eq!(waits, vec![1, 2, 4]);
+        assert_eq!(provider.requests.get(), 4);
+    }
+
+    #[test]
+    fn ctrl_c_during_a_wait_ends_the_turn() {
+        let provider = Scripted::new([http_error(Some(429), "HTTP 429: busy"), reply("unused")]);
+        let waits = Waits { sleep: |_| Err(crate::error::Error::Cancelled), jitter: || 0.0 };
+        let result = run_turn_with(&provider, &Toolbox::default(), &Policy::default(), &mut vec![Message::user("hi")], &mut |_| {}, &mut |_, _, _| true, waits);
+        assert!(matches!(result, Err(crate::error::Error::Cancelled)));
+        assert_eq!(provider.requests.get(), 1);
     }
 
     #[test]

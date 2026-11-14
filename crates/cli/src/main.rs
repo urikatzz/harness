@@ -74,6 +74,9 @@ fn run() -> Result<()> {
                 if let agent::Event::ToolCall { name, args } = ev {
                     eprintln!("⚙ {name} {args}");
                 }
+                if let agent::Event::Retry { wait, error, .. } = ev {
+                    eprintln!("↻ {}", repl::retry_notice(wait, error));
+                }
                 if let agent::Event::Denied { reason, .. } = ev {
                     eprintln!("✗ {reason}");
                 }

@@ -22,3 +22,37 @@ impl Drop for TestDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+use crate::error::{Error, Result};
+use crate::provider::{Message, Provider, Reply};
+use std::cell::RefCell;
+use std::collections::VecDeque;
+
+/// A provider that plays back replies and errors in order, and counts the requests it got.
+pub struct Scripted {
+    steps: RefCell<VecDeque<Result<Reply>>>,
+    pub requests: std::cell::Cell<usize>,
+}
+impl Scripted {
+    pub fn new(steps: impl IntoIterator<Item = Result<Reply>>) -> Self {
+        Self { steps: RefCell::new(steps.into_iter().collect()), requests: Default::default() }
+    }
+}
+impl Provider for Scripted {
+    fn complete(&self, history: &[Message]) -> Result<String> {
+        self.complete_with_reasoning(history).map(|r| r.text)
+    }
+    fn complete_with_reasoning(&self, _: &[Message]) -> Result<Reply> {
+        self.requests.set(self.requests.get() + 1);
+        self.steps.borrow_mut().pop_front().expect("the script ran out of replies")
+    }
+}
+
+pub fn reply(text: &str) -> Result<Reply> {
+    Ok(Reply { text: text.into(), reasoning: None, usage: None })
+}
+
+/// An HTTP failure; `None` means the server could not be reached.
+pub fn http_error(status: Option<u16>, message: &str) -> Result<Reply> {
+    Err(Error::Http { status, retry_after: None, message: message.into() })
+}
