@@ -55,6 +55,38 @@ fn flatten(history: &[Message]) -> String {
     out
 }
 
+/// Builds the error for a failed CLI run. `claude -p` reports failures (usage limit,
+/// unknown model, not logged in) on stdout, `codex` on stderr, so both are included.
+fn failure_message(program: &str, status: impl std::fmt::Display, stdout: &[u8], stderr: &[u8]) -> String {
+    let (stdout, stderr) = (String::from_utf8_lossy(stdout), String::from_utf8_lossy(stderr));
+    let parts: Vec<&str> = [stderr.trim(), stdout.trim()].into_iter().filter(|s| !s.is_empty()).collect();
+    let detail = if parts.is_empty() { "no output".to_string() } else { parts.join("\n") };
+    format!("`{program}` failed ({status}): {detail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failure_message;
+
+    #[test]
+    fn failure_reported_on_stdout_is_shown() {
+        let msg = failure_message("claude", "exit status: 1", b"Usage limit reached\n", b"");
+        assert_eq!(msg, "`claude` failed (exit status: 1): Usage limit reached");
+    }
+
+    #[test]
+    fn stderr_and_stdout_are_both_shown() {
+        let msg = failure_message("codex", "exit status: 2", b"partial", b"boom\n");
+        assert_eq!(msg, "`codex` failed (exit status: 2): boom\npartial");
+    }
+
+    #[test]
+    fn silent_failure_says_so() {
+        let msg = failure_message("claude", "exit status: 1", b"", b" \n");
+        assert_eq!(msg, "`claude` failed (exit status: 1): no output");
+    }
+}
+
 impl Provider for CliProvider {
     fn complete(&self, history: &[Message]) -> Result<String> {
         let mut command = crate::sandbox::provider_command(self.program, &self.args, &self.root, &crate::layout().company)?;
@@ -63,8 +95,7 @@ impl Provider for CliProvider {
             .map_err(|e| format!("could not run `{}`: {e}", self.program))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("`{}` failed ({}): {}", self.program, output.status, stderr.trim()).into());
+            return Err(failure_message(self.program, output.status, &output.stdout, &output.stderr).into());
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }

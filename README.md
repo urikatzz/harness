@@ -72,6 +72,13 @@ live in `files.rs`), listed in `builtin::all`.
 
 **CLI providers get flattened history.** The `claude` and `codex` providers receive multi-message history as a single `User:/Assistant:` transcript prompt.
 
+#### Scenario: A CLI backend fails
+
+- **GIVEN** the `claude` or `codex` backend is selected
+- **WHEN** the CLI exits with a non-zero status (usage limit reached, unknown model, not logged in)
+- **THEN** the error shows what the CLI printed on stderr and on stdout, since `claude -p` reports failures on stdout
+- **AND** it says `no output` when the CLI printed nothing
+
 **Local model auto-detect.** With no model argument, the `local` provider uses the first non-embedding model from `<LOCAL_BASE_URL>/models`. It exits with an error if the server is down or lists no chat model.
 
 **Server error.** When an HTTP provider answers with a non-2xx status, the status code and response body are shown (e.g. bad key, unknown model).
