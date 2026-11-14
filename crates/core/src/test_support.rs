@@ -24,7 +24,7 @@ impl Drop for TestDir {
 }
 
 use crate::error::{Error, Result};
-use crate::provider::{Message, Provider, Reply};
+use crate::provider::{Message, Provider, Reply, Usage};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -50,6 +50,10 @@ impl Provider for Scripted {
 
 pub fn reply(text: &str) -> Result<Reply> {
     Ok(Reply { text: text.into(), reasoning: None, usage: None })
+}
+
+pub fn reply_with_usage(text: &str, input_tokens: u64, output_tokens: u64) -> Result<Reply> {
+    Ok(Reply { text: text.into(), reasoning: None, usage: Some(Usage { input_tokens, output_tokens }) })
 }
 
 /// An HTTP failure; `None` means the server could not be reached.

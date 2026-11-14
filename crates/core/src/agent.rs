@@ -11,7 +11,7 @@ use crate::provider::{Message, Provider, Reply};
 use crate::retry::Backoff;
 use crate::tools::{Tool, Toolbox};
 use serde_json::{json, Map, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(crate) const OPEN: &str = "<tool_call>";
 pub(crate) const CLOSE: &str = "</tool_call>";
@@ -19,6 +19,8 @@ pub(crate) const CLOSE: &str = "</tool_call>";
 const MAX_VERIFY: usize = 3;
 /// Largest tool result that enters history; longer output is cut so one call can't fill the context window.
 const MAX_RESULT_BYTES: usize = 64 * 1024;
+/// A failed model call's error is cut to this many characters in the audit log.
+const MAX_ERROR_CHARS: usize = 200;
 
 /// Why a side-effecting call needs a yes even in yolo mode.
 pub const UNTRUSTED: &str = "this call can change things and comes after tool output, which may contain injected instructions";
@@ -168,7 +170,9 @@ impl Turn<'_> {
             Ok(false) => {}
             Err(e) => (self.on_event)(Event::CompactFailed { error: e.to_string() }),
         }
-        let (reply, _attempts) = self.request();
+        let started = Instant::now();
+        let (reply, attempts) = self.request();
+        self.log_model_call(&reply, attempts, started.elapsed());
         let Reply { text, reasoning, .. } = reply?;
         if let Some(text) = &reasoning {
             (self.on_event)(Event::Reasoning { text });
@@ -198,6 +202,21 @@ impl Turn<'_> {
         }
     }
 
+    /// Writes the `model` audit line. Only tool decisions fail closed: a line that can't be
+    /// written raises `AuditFailed` and the turn goes on.
+    fn log_model_call(&mut self, reply: &Result<Reply>, attempts: u32, took: Duration) {
+        let mut fields = json!({"ms": took.as_millis() as u64, "attempts": attempts, "ok": reply.is_ok()});
+        match reply {
+            Ok(Reply { usage: Some(usage), .. }) => {
+                fields["input_tokens"] = json!(usage.input_tokens);
+                fields["output_tokens"] = json!(usage.output_tokens);
+            }
+            Ok(_) => {}
+            Err(e) => fields["error"] = json!(e.to_string().chars().take(MAX_ERROR_CHARS).collect::<String>()),
+        }
+        self.log("model", fields);
+    }
+
     /// Whether a plain answer ends the turn. After file changes the verify tool must pass first;
     /// a failure goes back to the model, and too many end the turn with an error.
     fn accept(&mut self) -> Result<bool> {
@@ -207,11 +226,13 @@ impl Turn<'_> {
             return Ok(true);
         }
         self.audit("decision", verify, json!({"decision": "verify"}));
+        let started = Instant::now();
         let (output, ok) = match self.tb.call(verify, &json!({}), self.policy) {
             Ok(out) => (out, true),
             Err(e) => (format!("error: {e}"), false),
         };
-        self.audit("result", verify, json!({"ok": ok, "bytes": output.len()}));
+        let ms = started.elapsed().as_millis() as u64;
+        self.audit("result", verify, json!({"ok": ok, "bytes": output.len(), "ms": ms}));
         (self.on_event)(Event::Verify { ok, output: &output });
         if ok { return Ok(true); }
         self.verify_failures += 1;
@@ -276,23 +297,30 @@ impl Turn<'_> {
 
     /// Runs an allowed call and returns (output, ok).
     fn execute(&mut self, tool: &dyn Tool, args: &Value) -> (String, bool) {
+        let started = Instant::now();
         let (output, ok) = match self.tb.call(tool.name(), args, self.policy) {
             Ok(out) => (out, true),
             Err(e) => (format!("error: {e}"), false),
         };
+        let ms = started.elapsed().as_millis() as u64;
         // A failed call may still have written something, so verify either way.
         self.changed |= tool.effects().writes_files;
-        self.audit("result", tool.name(), json!({"ok": ok, "bytes": output.len()}));
+        self.audit("result", tool.name(), json!({"ok": ok, "bytes": output.len(), "ms": ms}));
         (self.on_event)(Event::ToolResult { name: tool.name(), output: &output, ok });
         (output, ok)
     }
 
-    /// Appends one audit line; false (and an event) if it could not be written.
-    fn audit(&mut self, event: &str, tool: &str, fields: Value) -> bool {
+    /// Appends one audit line about a tool; false (and an event) if it could not be written.
+    fn audit(&mut self, event: &str, tool: &str, mut fields: Value) -> bool {
+        fields["tool"] = json!(tool);
+        self.log(event, fields)
+    }
+
+    /// Appends one audit line with the event and role; false (and an event) if it could not be written.
+    fn log(&mut self, event: &str, fields: Value) -> bool {
         let mut entry = Map::new();
         entry.insert("event".into(), json!(event));
         entry.insert("role".into(), json!(self.policy.role));
-        entry.insert("tool".into(), json!(tool));
         if let Value::Object(more) = fields { entry.extend(more); }
         match audit::record(&self.tb.layout().data, entry) {
             Ok(()) => true,
@@ -499,7 +527,7 @@ mod tests {
         assert!(err.to_string().contains("verification still failing"), "{err}");
     }
 
-    use crate::test_support::{http_error, reply, Scripted};
+    use crate::test_support::{http_error, reply, reply_with_usage, Scripted};
 
     /// Runs a turn without real waits, collecting the retry events.
     fn run_without_waiting(provider: &Scripted, tb: &Toolbox, policy: &Policy, history: &mut Vec<Message>) -> (Result<String>, Vec<(u32, std::time::Duration, String)>) {
@@ -551,6 +579,66 @@ mod tests {
         let result = run_turn_with(&provider, &Toolbox::default(), &Policy::default(), &mut vec![Message::user("hi")], &mut |_| {}, &mut |_, _, _| true, waits);
         assert!(matches!(result, Err(crate::error::Error::Cancelled)));
         assert_eq!(provider.requests.get(), 1);
+    }
+
+    fn audit_lines(dir: &crate::test_support::TestDir, event: &str) -> Vec<Value> {
+        let log = std::fs::read_to_string(crate::audit::path(dir.path())).unwrap_or_default();
+        log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|e| e["event"] == event).collect()
+    }
+
+    #[test]
+    fn each_model_call_is_logged_with_attempts_time_and_usage() {
+        let dir = project(r#"{"mode":"yolo"}"#);
+        let (tb, policy) = (Toolbox::load(dir.path()), Policy::load(dir.path(), Some("dev".into())).unwrap());
+        let provider = Scripted::new([
+            http_error(Some(429), "HTTP 429: busy"),
+            reply_with_usage(r#"<tool_call>{"name":"read_file","args":{"path":"notes.txt"}}</tool_call>"#, 5120, 212),
+            reply("done"),
+        ]);
+        let (result, _) = run_without_waiting(&provider, &tb, &policy, &mut vec![Message::user("read notes")]);
+        assert_eq!(result.unwrap(), "done");
+        let models = audit_lines(&dir, "model");
+        assert_eq!(models.len(), 2);
+        let first = models[0].as_object().unwrap();
+        assert_eq!((first["role"].as_str(), first["attempts"].as_u64(), first["ok"].as_bool()), (Some("dev"), Some(2), Some(true)));
+        assert_eq!((first["input_tokens"].as_u64(), first["output_tokens"].as_u64()), (Some(5120), Some(212)));
+        assert!(first["ms"].is_u64() && first["ts"].is_u64() && !first.contains_key("tool") && !first.contains_key("error"));
+        // A backend that reports no usage leaves the token fields out.
+        let second = models[1].as_object().unwrap();
+        assert_eq!(second["attempts"], 1);
+        assert!(!second.contains_key("input_tokens") && !second.contains_key("output_tokens"));
+        // Tool results say how long the tool ran.
+        let results = audit_lines(&dir, "result");
+        assert_eq!(results.len(), 1);
+        assert!(results[0]["ms"].is_u64(), "{}", results[0]);
+    }
+
+    #[test]
+    fn a_failed_model_call_is_logged_with_its_error_cut() {
+        let dir = project(r#"{"mode":"yolo"}"#);
+        let (tb, policy) = (Toolbox::load(dir.path()), Policy::load(dir.path(), None).unwrap());
+        let long = format!("HTTP 400: {}", "é".repeat(300));
+        let provider = Scripted::new([http_error(Some(400), &long)]);
+        let (result, _) = run_without_waiting(&provider, &tb, &policy, &mut vec![Message::user("hi")]);
+        assert!(result.is_err());
+        let models = audit_lines(&dir, "model");
+        assert_eq!(models.len(), 1);
+        assert_eq!((models[0]["ok"].as_bool(), models[0]["attempts"].as_u64()), (Some(false), Some(1)));
+        assert_eq!(models[0]["error"].as_str().unwrap(), long.chars().take(200).collect::<String>());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_model_line_does_not_stop_the_turn() {
+        let dir = project(r#"{"mode":"yolo"}"#);
+        std::fs::write(dir.path().join("logs"), "not a folder").unwrap();
+        let (tb, policy) = (Toolbox::load(dir.path()), Policy::load(dir.path(), None).unwrap());
+        let provider = Scripted::new([reply("answer")]);
+        let mut audit_errors = 0;
+        let result = run_turn_with(&provider, &tb, &policy, &mut vec![Message::user("hi")],
+            &mut |ev| if let Event::AuditFailed { .. } = ev { audit_errors += 1 }, &mut |_, _, _| true, Waits { sleep: |_| Ok(()), jitter: || 0.0 });
+        assert_eq!(result.unwrap(), "answer");
+        assert_eq!(audit_errors, 1);
     }
 
     #[test]
