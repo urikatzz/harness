@@ -129,7 +129,7 @@ impl Turn<'_> {
             Err(e) => (self.on_event)(Event::CompactFailed { error: e.to_string() }),
         }
         (self.on_event)(Event::Thinking);
-        let Reply { text, reasoning } = self.provider.complete_with_reasoning(self.history)?;
+        let Reply { text, reasoning, .. } = self.provider.complete_with_reasoning(self.history)?;
         if let Some(text) = &reasoning {
             (self.on_event)(Event::Reasoning { text });
         }

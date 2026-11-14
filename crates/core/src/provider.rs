@@ -77,7 +77,7 @@ pub trait Provider {
 
     /// Like `complete`, plus the model's reasoning when the backend exposes it.
     fn complete_with_reasoning(&self, history: &[Message]) -> Result<Reply> {
-        Ok(Reply { text: self.complete(history)?, reasoning: None })
+        Ok(Reply { text: self.complete(history)?, reasoning: None, usage: None })
     }
 }
 
@@ -85,6 +85,14 @@ pub trait Provider {
 pub struct Reply {
     pub text: String,
     pub reasoning: Option<String>,
+    /// Tokens the backend says this request used; `None` when it doesn't report them.
+    pub usage: Option<Usage>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 /// Which backend, model and reasoning effort to use. `None` means "backend default".

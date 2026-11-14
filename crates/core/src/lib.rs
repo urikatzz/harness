@@ -20,7 +20,7 @@ pub mod tools;
 pub use error::{Error, Result};
 pub use layout::Layout;
 pub use permissions::Policy;
-pub use provider::{Kind, Message, Provider, Reply, Role, Selection};
+pub use provider::{Kind, Message, Provider, Reply, Role, Selection, Usage};
 pub use providers::build_provider;
 pub use tools::{Tool, Toolbox};
 

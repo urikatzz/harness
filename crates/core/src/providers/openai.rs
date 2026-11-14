@@ -1,6 +1,6 @@
 use crate::interrupt;
 use crate::error::{Error, Result};
-use crate::provider::{Message, Provider, Reply};
+use crate::provider::{Message, Provider, Reply, Usage};
 use crate::retry;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -118,19 +118,26 @@ impl Provider for OpenAiCompatible {
             }
             Err(e) => Err(Error::from(e)),
         })?;
-        let body = sent?;
-
-        let message = &body["choices"][0]["message"];
-        let content = message["content"].as_str().ok_or_else(|| format!("unexpected response: {body}"))?;
-        // LM Studio / Ollama use `reasoning_content`, OpenRouter uses `reasoning`.
-        let field = message["reasoning_content"].as_str().or(message["reasoning"].as_str());
-        Ok(split_reasoning(content, field))
+        parse_reply(&sent?)
     }
+}
+
+/// The reply, reasoning and token usage in a `/chat/completions` response body.
+fn parse_reply(body: &Value) -> Result<Reply> {
+    let message = &body["choices"][0]["message"];
+    let content = message["content"].as_str().ok_or_else(|| format!("unexpected response: {body}"))?;
+    // LM Studio / Ollama use `reasoning_content`, OpenRouter uses `reasoning`.
+    let field = message["reasoning_content"].as_str().or(message["reasoning"].as_str());
+    let (text, reasoning) = split_reasoning(content, field);
+    let usage = &body["usage"];
+    let usage = usage["prompt_tokens"].as_u64().zip(usage["completion_tokens"].as_u64())
+        .map(|(input_tokens, output_tokens)| Usage { input_tokens, output_tokens });
+    Ok(Reply { text, reasoning, usage })
 }
 
 /// Separates reasoning from the answer. Some servers put it in its own field; others
 /// leave it inline as `<think>…</think>` at the start of the content.
-fn split_reasoning(content: &str, field: Option<&str>) -> Reply {
+fn split_reasoning(content: &str, field: Option<&str>) -> (String, Option<String>) {
     let mut reasoning = field.map(str::trim).filter(|r| !r.is_empty()).map(str::to_owned);
     let mut text = content;
     let trimmed = content.trim_start();
@@ -143,28 +150,48 @@ fn split_reasoning(content: &str, field: Option<&str>) -> Reply {
             text = rest;
         }
     }
-    Reply { text: text.trim_start().to_owned(), reasoning }
+    (text.trim_start().to_owned(), reasoning)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::split_reasoning;
+    use super::{parse_reply, split_reasoning};
+    use crate::provider::Usage;
+    use serde_json::json;
+
+    #[test]
+    fn usage_from_the_response_body() {
+        let body = json!({"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 5120, "completion_tokens": 212, "total_tokens": 5332}});
+        let r = parse_reply(&body).unwrap();
+        assert_eq!(r.text, "hi");
+        assert_eq!(r.usage, Some(Usage { input_tokens: 5120, output_tokens: 212 }));
+    }
+
+    #[test]
+    fn no_usage_when_the_server_sends_none() {
+        let r = parse_reply(&json!({"choices": [{"message": {"content": "hi"}}]})).unwrap();
+        assert_eq!(r.usage, None);
+        // A partial usage object is not reported as zero tokens.
+        let r = parse_reply(&json!({"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 3}})).unwrap();
+        assert_eq!(r.usage, None);
+        assert!(parse_reply(&json!({"choices": []})).is_err());
+    }
 
     #[test]
     fn reasoning_from_field() {
-        let r = split_reasoning("answer", Some("because"));
-        assert_eq!((r.text.as_str(), r.reasoning.as_deref()), ("answer", Some("because")));
+        let (text, reasoning) = split_reasoning("answer", Some("because"));
+        assert_eq!((text.as_str(), reasoning.as_deref()), ("answer", Some("because")));
     }
 
     #[test]
     fn reasoning_from_think_tags() {
-        let r = split_reasoning("<think>\nhmm\n</think>\n\nanswer", None);
-        assert_eq!((r.text.as_str(), r.reasoning.as_deref()), ("answer", Some("hmm")));
+        let (text, reasoning) = split_reasoning("<think>\nhmm\n</think>\n\nanswer", None);
+        assert_eq!((text.as_str(), reasoning.as_deref()), ("answer", Some("hmm")));
     }
 
     #[test]
     fn no_reasoning() {
-        let r = split_reasoning("plain", Some("  "));
-        assert_eq!((r.text.as_str(), r.reasoning), ("plain", None));
+        let (text, reasoning) = split_reasoning("plain", Some("  "));
+        assert_eq!((text.as_str(), reasoning), ("plain", None));
     }
 }
