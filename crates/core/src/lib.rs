@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod prompt;
 pub mod provider;
 pub mod providers;
+pub mod retry;
 pub mod session;
 pub mod tools;
 

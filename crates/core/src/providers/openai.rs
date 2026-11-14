@@ -1,6 +1,7 @@
 use crate::interrupt;
 use crate::error::{Error, Result};
 use crate::provider::{Message, Provider, Reply};
+use crate::retry;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -111,7 +112,9 @@ impl Provider for OpenAiCompatible {
             Ok(resp) => resp.into_json::<Value>().map_err(Error::from),
             // Surface the server's error body; it usually says what's wrong (bad model, bad key).
             Err(ureq::Error::Status(code, resp)) => {
-                Err(Error::Http(format!("HTTP {code}: {}", resp.into_string().unwrap_or_default())))
+                let retry_after = resp.header("retry-after").and_then(retry::retry_after_secs);
+                let message = format!("HTTP {code}: {}", resp.into_string().unwrap_or_default());
+                Err(Error::Http { status: Some(code), retry_after, message })
             }
             Err(e) => Err(Error::from(e)),
         })?;
