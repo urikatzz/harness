@@ -149,6 +149,16 @@ Memory (`<name>.md` with frontmatter, plus a `MEMORY.md` index in every scope fo
 
 Built-in tools: `read_file`, `list_files`, `search_files`, `write_file`, `edit_file`, `load_skill`, `remember`, `forget`.
 
+**Search indexed knowledge (optional RAG tool).** Install the [knowledge_search tool package](tools/knowledge_search/README.md) with its `rag-cli` binary, experiment config and index snapshot. Generated binary, config and index files are ignored by Git, so a fresh clone needs those assets installed separately. The model calls it to retrieve passages, then uses the returned titles and chunk IDs to cite its answer. It uses local BM25 search with no network access.
+
+```json
+{"name":"knowledge_search","args":{"query":"cached token billing","k":8}}
+```
+
+`query` is required; `k` defaults to 8 and accepts 1–100. Each result includes passage text, title, source type, document ID, chunk ID, byte span and score. No matches returns an empty `results` array. Citation IDs identify corpus documents and chunks; they are not web URLs.
+
+The default `dev` and `owner` roles allow this tool through their `"*"` grant; `sales` and `art` do not. Run `/reload` in an existing session and check `/tools`. Normal approval, auditing and sandbox rules apply. Granting this tool exposes its entire installed corpus; there is no document-level permission filtering. The current bundled snapshot contains 30,000 synthetic benchmark documents, not live company knowledge.
+
 **Find files.** `list_files` returns project-relative paths, sorted, one per line. `path` limits it to a folder and `glob` to matching paths (`*` stays in one folder, `**` crosses folders, so `**/*.rs` is every Rust file). Files ignored by `.gitignore`, the `.git/` folder and symlinks are never listed. Past 500 entries the result says how many were left out.
 
 **Search files.** `search_files` takes a regular expression in `pattern`, plus the same `path` and `glob`, and returns `path:line: text` for each matching line. It stops at 200 matches and says more exist; lines are cut to 300 characters. Files over 1 MiB or that aren't UTF-8 are skipped. An invalid pattern fails before any file is read.
