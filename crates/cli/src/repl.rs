@@ -140,9 +140,7 @@ impl Repl {
     }
 
     fn save(&self) {
-        if let Err(e) = self.session.save(&self.history) {
-            println!("{RED}couldn't save session: {e}{RESET}");
-        }
+        save_session(&self.session, &self.history);
     }
 
     /// Re-reads tools/ and skills/ and restarts the conversation with the new instructions.
@@ -254,6 +252,7 @@ impl Repl {
                     if ok { println!("{DIM}✓ verified{RESET}") } else { println!("{RED}✗ verify failed: {first}{RESET}") }
                 }
                 Event::AuditFailed { error } => println!("{RED}  audit log: {error}{RESET}"),
+                Event::Checkpoint { history } => save_session(&self.session, history),
             }
         }, ask_approval);
         drop(spinner);
@@ -401,6 +400,13 @@ impl Repl {
     }
 }
 
+/// Saves `history`; a failure is reported and the chat goes on.
+fn save_session(session: &Session, history: &[Message]) {
+    if let Err(e) = session.save(history) {
+        println!("{RED}couldn't save session: {e}{RESET}");
+    }
+}
+
 /// Runs `cmd` through the user's shell, streaming its output straight to the terminal.
 /// Most of a model's reasoning shown dimmed above its answer; very long ones are cut.
 fn print_reasoning(text: &str) {
@@ -456,7 +462,8 @@ pub fn ask_approval(name: &str, args: &serde_json::Value, why: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     struct FailsAfterWrite(Cell<usize>);
     impl Provider for FailsAfterWrite {
@@ -475,6 +482,46 @@ mod tests {
         assert_eq!(retry_notice(wait, "HTTP 429: rate limited"), "retrying in 2s (HTTP 429: rate limited)");
         let long = format!("HTTP 503: {}\nsecond line", "x".repeat(300));
         assert_eq!(retry_notice(wait, &long), format!("retrying in 2s (HTTP 503: {} …)", "x".repeat(110)));
+    }
+
+    /// Writes a file, then reads the saved session back before giving its answer.
+    struct ReadsSessionMidTurn { home: std::path::PathBuf, calls: Cell<usize>, seen: Rc<RefCell<Vec<Message>>> }
+    impl Provider for ReadsSessionMidTurn {
+        fn complete(&self, _: &[Message]) -> umango_core::Result<String> {
+            self.calls.set(self.calls.get() + 1);
+            if self.calls.get() == 1 {
+                return Ok(r#"<tool_call>{"name":"write_file","args":{"path":"result.txt","content":"done"}}</tool_call>"#.into());
+            }
+            let latest = session::list(&self.home).first().map(|s| s.id.clone()).ok_or("no session saved yet")?;
+            *self.seen.borrow_mut() = Session::open(&self.home, &latest).load()?;
+            Ok("all done".into())
+        }
+    }
+
+    #[test]
+    fn a_tool_step_is_saved_before_the_turn_ends() {
+        let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let home = std::env::temp_dir().join(format!("umango-checkpoint-{}-{id}", std::process::id()));
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("permissions.json"), r#"{"mode":"yolo"}"#).unwrap();
+        let seen = Rc::new(RefCell::new(vec![]));
+        let mut repl = Repl {
+            factory: |_| unreachable!(),
+            provider: Box::new(ReadsSessionMidTurn { home: home.clone(), calls: Cell::new(0), seen: seen.clone() }),
+            selection: Selection::default(),
+            history: vec![],
+            toolbox: Toolbox::load(&home),
+            policy: Policy::load(&home, None).unwrap(),
+            role: None,
+            layout: Layout::single(&home),
+            session: Session::new(&home),
+        };
+        repl.chat("write the result");
+        // While the model was still working, the session already ended with the tool result.
+        let seen = seen.borrow();
+        assert!(seen.last().is_some_and(|m| m.content.starts_with("<tool_result name=\"write_file\">")), "{:?}", seen.iter().map(|m| &m.content).collect::<Vec<_>>());
+        assert_eq!(seen.first().unwrap().content, "write the result");
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

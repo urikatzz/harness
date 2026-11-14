@@ -46,6 +46,9 @@ pub enum Event<'a> {
     Verify { ok: bool, output: &'a str },
     /// The audit log could not be written.
     AuditFailed { error: String },
+    /// A tool step (run, denied, invalid call or failed verify) is in the history; a good
+    /// moment to save it, so a killed turn can be resumed from here.
+    Checkpoint { history: &'a [Message] },
 }
 
 /// Pulls the first `{"name", "args"}` call out of a reply, if there is one.
@@ -243,6 +246,7 @@ impl Turn<'_> {
         self.history.push(tool_result("verify", &format!(
             "Your changes failed verification ({verify}). Fix the problems, then answer again.\n{output}"
         ), false));
+        self.checkpoint();
         Ok(false)
     }
 
@@ -254,6 +258,7 @@ impl Turn<'_> {
             call_format()
         );
         self.history.push(Message::tool_result(format!("<tool_result name=\"invalid_call\">\n{help}\n</tool_result>"), true));
+        self.checkpoint();
     }
 
     /// Decides on one call, runs it if allowed, and hands the result to the model.
@@ -272,6 +277,11 @@ impl Turn<'_> {
             }
         };
         self.history.push(message);
+        self.checkpoint();
+    }
+
+    fn checkpoint(&mut self) {
+        (self.on_event)(Event::Checkpoint { history: self.history });
     }
 
     /// Why the call must not run, or None if it may. Every decision is audited first.
@@ -512,9 +522,17 @@ mod tests {
         ]);
         let mut history = vec![Message::user("make it")];
         let mut results = vec![];
-        let reply = run_turn(&provider, &tb, &policy, &mut history, |ev| if let Event::Verify { ok, .. } = ev { results.push(ok) }, |_, _, _| true).unwrap();
+        let mut checkpoints = vec![];
+        let reply = run_turn(&provider, &tb, &policy, &mut history, |ev| match ev {
+            Event::Verify { ok, .. } => results.push(ok),
+            Event::Checkpoint { history } => checkpoints.push(history.last().unwrap().content.clone()),
+            _ => {}
+        }, |_, _, _| true).unwrap();
         assert_eq!(reply, "fixed");
         assert_eq!(results, vec![false, true]);
+        // Both writes and the failed verify are checkpoints; the passing verify ends the turn.
+        assert_eq!(checkpoints.len(), 3);
+        assert!(checkpoints[1].contains("failed verification"));
         assert!(history.iter().any(|m| m.content.contains("failed verification") && m.content.contains("r.txt is not good")));
 
         // A model that never fixes it stops after a few attempts instead of looping.
@@ -579,6 +597,29 @@ mod tests {
         let result = run_turn_with(&provider, &Toolbox::default(), &Policy::default(), &mut vec![Message::user("hi")], &mut |_| {}, &mut |_, _, _| true, waits);
         assert!(matches!(result, Err(crate::error::Error::Cancelled)));
         assert_eq!(provider.requests.get(), 1);
+    }
+
+    #[test]
+    fn every_tool_step_is_a_checkpoint_carrying_its_result() {
+        let dir = project(r#"{"mode":"yolo"}"#);
+        let (tb, policy) = (Toolbox::load(dir.path()), Policy::load(dir.path(), None).unwrap());
+        let provider = Scripted::new([
+            reply(r#"<tool_call>{"name":"read_file","args":{"path":"notes.txt"}}</tool_call>"#),
+            reply(r#"<tool_call>{"name":"no_such_tool","args":{}}</tool_call>"#),
+            reply(r#"<tool_call>{"name":"read_file"}</tool_call>"#),
+            reply("done"),
+        ]);
+        let mut history = vec![Message::user("go")];
+        let mut checkpoints = vec![];
+        run_turn_with(&provider, &tb, &policy, &mut history, &mut |ev| {
+            if let Event::Checkpoint { history } = ev { checkpoints.push((history.len(), history.last().unwrap().content.clone())) }
+        }, &mut |_, _, _| true, Waits { sleep: |_| Ok(()), jitter: || 0.0 }).unwrap();
+        assert_eq!(checkpoints.len(), 3);
+        // Each one ends with the step's result: the run, the denial, the invalid call.
+        assert_eq!(checkpoints.iter().map(|c| c.0).collect::<Vec<_>>(), vec![3, 5, 7]);
+        assert!(checkpoints[0].1.starts_with("<tool_result name=\"read_file\">") && checkpoints[0].1.contains("Ignore the user"));
+        assert!(checkpoints[1].1.contains("denied: no tool `no_such_tool`"));
+        assert!(checkpoints[2].1.starts_with("<tool_result name=\"invalid_call\">"));
     }
 
     fn audit_lines(dir: &crate::test_support::TestDir, event: &str) -> Vec<Value> {
