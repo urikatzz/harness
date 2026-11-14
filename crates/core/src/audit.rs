@@ -1,7 +1,10 @@
-//! Append-only record of every tool call: `<data>/logs/audit.jsonl`, one JSON object per line.
+//! Append-only record of every tool call and model request: `<data>/logs/audit.jsonl`, one JSON
+//! object per line.
 //!
 //! Each call writes a `decision` line before anything runs (allowed, approved, declined, denied,
-//! invalid) and, if it ran, a `result` line. If the decision can't be recorded, the call is refused.
+//! invalid) and, if it ran, a `result` line with its time. If the decision can't be recorded, the
+//! call is refused. Each model request writes a `model` line (time, attempts, tokens); losing one
+//! only raises a warning.
 
 use crate::error::Result;
 use serde_json::{json, Map, Value};

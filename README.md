@@ -22,7 +22,7 @@ with a company folder, it becomes the company's own assistant:
 4. **Check.** The call is checked against the role, the file rules and the approval mode. It is allowed, denied, or you are asked y/N. The decision is written to the audit log before anything runs.
 5. **Run.** Built-in file tools work only inside the project. Custom tools run in an OS sandbox with no network and a clean environment unless their `tool.json` says otherwise. The result goes back to the model, and steps 3-5 repeat up to `max_steps`.
 6. **Verify.** If the model changed files and a `verify` tool is set, it runs before the answer is accepted. A failure goes back to the model to fix.
-7. **Save.** The session is saved under the user's data folder, never in the project.
+7. **Save.** The session is saved under the user's data folder, never in the project, after each tool step and at the end of the turn.
 
 Details for each step are under [Company tools, skills and permissions](#company-tools-skills-and-permissions).
 
@@ -92,7 +92,9 @@ live in `files.rs`), listed in `builtin::all`.
 
 **One-shot prompt.** `umango <provider> -p "text"` prints the reply to stdout and exits 0. On any failure the error goes to stderr and the exit code is 1.
 
-**Chat keeps history.** In chat mode (no `-p`), every request includes all earlier user and assistant turns. A failed turn keeps its completed tool calls and results, records the interruption and saves the session, so a retry can account for changes already made.
+**Chat keeps history.** In chat mode (no `-p`), every request includes all earlier user and assistant turns. The session is saved after every tool result (run, denied or invalid call), so if umango is killed mid-turn, `umango -c` reopens it at the last tool result; say "continue" to go on. A save that fails prints `couldn't save session` and the turn goes on. A failed turn keeps its completed tool calls and results, records the interruption and saves the session, so a retry can account for changes already made. One-shot `-p` runs and evals don't save sessions.
+
+**Retries.** A model request that fails because the server can't be reached, the connection broke, or it answered HTTP 408, 429, 500, 502, 503 or 504 is retried up to 3 times, after 1s, 2s and 4s plus up to 25% jitter. A `Retry-After` in seconds replaces the wait, capped at 30s. Each retry prints a dim line such as `retrying in 2s (HTTP 429: rate limited)`, and Ctrl-C during the wait ends the turn. Other errors (bad key, unknown model, a malformed reply, and every `claude` or `codex` failure) fail at once, and when the retries run out the turn fails with the last error. Summarizing is not retried.
 
 **CLI providers get flattened history.** The `claude` and `codex` providers receive multi-message history as a single `User:/Assistant:` transcript prompt.
 
@@ -227,7 +229,13 @@ The tool loop runs only explicit `<tool_call>` replies. A plain-text reply ends 
 tools with their native tools; run `umango eval codex <model> --effort <level>` to check
 the selected model. Failed evals show the missing calls and the model's reply.
 
-**Audit log.** Every tool call adds a `decision` line to `logs/audit.jsonl` (time, role, tool, arguments with long strings cut to 200 characters, and `allowed`/`approved`/`declined`/`denied`/`invalid` with the reason) before anything runs, and a `result` line after. If the log can't be written, the call is refused.
+**Audit log.** Every tool call adds a `decision` line to `logs/audit.jsonl` (time, role, tool, arguments with long strings cut to 200 characters, and `allowed`/`approved`/`declined`/`denied`/`invalid` with the reason) before anything runs, and a `result` line after, with `ms`, how long the tool ran. If the log can't be written, the call is refused.
+
+Every model request in a turn adds a `model` line when it finishes: `ms` (all attempts and waits), `attempts` (requests sent), `ok`, and `input_tokens` and `output_tokens` when the backend reports them (`openrouter`, and `local` servers that send `usage`; never `claude` or `codex`). A failed request adds `error`, cut to 200 characters. If a `model` line can't be written, a warning is shown and the turn goes on; only tool calls fail closed.
+
+```json
+{"event":"model","role":"dev","ms":1840,"attempts":1,"ok":true,"input_tokens":5120,"output_tokens":212,"ts":1794690000000}
+```
 
 **Verify.** Set `"verify": "<tool name>"` in `permissions.json` to run that tool after the model changes files and before its answer is accepted. If it fails, its output goes back to the model to fix; after 3 failures in one turn, the turn stops with an error. The verify tool is set by whoever owns `permissions.json`, so it runs for every role. Give it `reads` so it can see the project.
 
