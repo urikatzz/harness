@@ -1,6 +1,30 @@
 # umango 👑
 
-The smallest model harness: send a prompt, print the reply, or open an interactive chat.
+A small model harness a company can install for its staff: one chat tool, on any model backend,
+where the company decides what the model may do.
+
+## What it is for
+
+Out of the box it sends a prompt and prints the reply, or opens an interactive chat. Installed
+with a company folder, it becomes the company's own assistant:
+
+- IT installs the company's description, tools, skills and permissions where users can't edit them.
+- Each role (`sales`, `dev`, ...) gets only the tools, skills and files it is allowed.
+- Every tool call is checked, sandboxed and written to an audit log.
+- Memory is shared by scope: personal, team and company.
+- The model backend is swappable (`claude`, `codex`, `openrouter`, `local`) without changing any of the above.
+
+## How it works
+
+1. **Start.** `umango` loads the company folder (`COMPANY.md`, tools, skills, `permissions.json`) and the memory indexes, and builds the system prompt for the user's role.
+2. **Ask.** Your message and the conversation so far go to the selected backend.
+3. **Tool call.** The model either answers in plain text, which ends the turn, or replies with a single `<tool_call>`.
+4. **Check.** The call is checked against the role, the file rules and the approval mode. It is allowed, denied, or you are asked y/N. The decision is written to the audit log before anything runs.
+5. **Run.** Built-in file tools work only inside the project. Custom tools run in an OS sandbox with no network and a clean environment unless their `tool.json` says otherwise. The result goes back to the model, and steps 3-5 repeat up to `max_steps`.
+6. **Verify.** If the model changed files and a `verify` tool is set, it runs before the answer is accepted. A failure goes back to the model to fix.
+7. **Save.** The session is saved under the user's data folder, never in the project.
+
+Details for each step are under [Company tools, skills and permissions](#company-tools-skills-and-permissions).
 
 ## Install
 
@@ -122,7 +146,6 @@ Memory (`<name>.md` with frontmatter, plus a `MEMORY.md` index in every scope fo
 | personal | `<data>/memory/` | only this user, in this project, when the role has `remember` | the user, via `remember` / `forget` |
 | team | `<shared>/memory/teams/<role>/` | everyone in that role | members of that role, then commit and push |
 | company | `<shared>/memory/company/` | everyone | owners only, then commit and push |
-| `logs/audit.jsonl` | Written by the harness: every tool call, who made it and what was decided. |
 
 Built-in tools: `read_file`, `list_files`, `search_files`, `write_file`, `edit_file`, `load_skill`, `remember`, `forget`.
 
@@ -169,7 +192,7 @@ With the company folder installed where users can't write, users can't change `p
 - CLI backends also run in the sandbox, start outside the project, and cannot read or write project contents through their native tools. Their login/configuration access remains available outside the project. HTTP backends do not need the sandbox.
 - macOS uses `sandbox-exec` (deprecated by Apple). Linux uses bubblewrap (`bwrap`; install the `bubblewrap` package): an empty read-only root with only system folders and the tool's folders mounted, all capabilities dropped. On Linux, existing protected files are covered with an unreadable placeholder, and protected files a tool creates in its `writes` folders are removed and the call fails. The sandbox is checked once per run; if it is missing or broken, or on Windows, custom tools and CLI backends refuse to run and say why. Set `"sandbox": false` in `permissions.json` to run them without it. They then have your normal file and network access (the environment is still cleaned), so only do this when you trust the tools and backends. Path checks for built-in file tools still apply.
 - Custom commands have a 60-second deadline; CLI inference has a 120-second deadline. Both have an 8 MiB input limit and 1 MiB per-stream output limits, and their process groups are terminated on timeout or excess output.
-- Tool calls must be a single, complete `<tool_call>` response containing exactly `name` and an object `args`. A malformed or mixed response runs nothing; the model gets the error back and can resend (this counts toward the 10-step limit).
+- Tool calls must be a single, complete `<tool_call>` response containing exactly `name` and an object `args`. A malformed or mixed response runs nothing; the model gets the error back and can resend (this counts toward the `max_steps` limit).
 
 In the chat: `/tools`, `/skills`, `/permissions`, `/reload` (re-reads everything after an edit).
 
